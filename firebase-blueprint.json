@@ -1,0 +1,891 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated member or admin profile with backend-governed permanent NX User ID and zero plaintext credentials.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Permanent unique NEXORA User ID (e.g., NX100001).",
+          "minLength": 8,
+          "maxLength": 16,
+          "pattern": "^NX[0-9]{6,10}$"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["USER", "ADMIN", "SUPER_ADMIN"],
+          "description": "User authorization role."
+        },
+        "fullName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "mobile": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "emailVerified": {
+          "type": "boolean"
+        },
+        "mobileVerified": {
+          "type": "boolean"
+        },
+        "authProvider": {
+          "type": "string",
+          "enum": ["password", "phone", "password+phone"]
+        },
+        "status": {
+          "type": "string",
+          "enum": ["ACTIVE", "SUSPENDED", "PENDING_VERIFICATION"]
+        },
+        "avatarUrl": {
+          "type": "string",
+          "maxLength": 100000,
+          "description": "Optional compressed square profile avatar data URL."
+        },
+        "referredByCode": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "userId",
+        "role",
+        "fullName",
+        "email",
+        "mobile",
+        "emailVerified",
+        "mobileVerified",
+        "authProvider",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "IdentityLock": {
+      "title": "IdentityLock",
+      "description": "Hashed uniqueness lock preventing duplicate email or mobile registrations without exposing PII.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["EMAIL", "MOBILE"]
+        },
+        "valueHash": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["type", "valueHash", "uid", "createdAt"]
+    },
+    "SystemCounter": {
+      "title": "SystemCounter",
+      "description": "Monotonic sequence counter enforcing atomic NX User ID allocation.",
+      "type": "object",
+      "properties": {
+        "nextNumber": {
+          "type": "integer"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["nextNumber", "updatedAt"]
+    },
+    "CoinWallet": {
+      "title": "CoinWallet",
+      "description": "Segregated virtual coin wallet initialized at zero balances upon verified registration.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 16,
+          "pattern": "^NX[0-9]{6,10}$"
+        },
+        "availableCoins": {
+          "type": "integer"
+        },
+        "purchasedCoins": {
+          "type": "integer"
+        },
+        "earnedCoins": {
+          "type": "integer"
+        },
+        "coinsUsedForPlans": {
+          "type": "integer"
+        },
+        "pendingTransactionCoins": {
+          "type": "integer"
+        },
+        "withdrawableBalanceInr": {
+          "type": "integer"
+        },
+        "lastWithdrawalRef": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "userId",
+        "availableCoins",
+        "purchasedCoins",
+        "earnedCoins",
+        "coinsUsedForPlans",
+        "pendingTransactionCoins",
+        "withdrawableBalanceInr",
+        "updatedAt"
+      ]
+    },
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Trusted administrator directory separating SUPER_ADMIN and ADMIN tiers.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "role": {
+          "type": "string",
+          "enum": ["ADMIN", "SUPER_ADMIN"]
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "createdByUid": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "active", "createdAt"]
+    },
+    "CoinTransaction": {
+      "title": "CoinTransaction",
+      "description": "Immutable virtual coin ledger entry recording deposits, plan investments, daily rewards, and withdrawals.",
+      "type": "object",
+      "properties": {
+        "transactionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 16,
+          "pattern": "^NX[0-9]{6,10}$"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "COIN_PURCHASE",
+            "PLAN_INVESTMENT",
+            "DAILY_REWARD",
+            "WITHDRAWAL_REQUEST",
+            "WITHDRAWAL_REFUND",
+            "ADMIN_ADJUSTMENT"
+          ]
+        },
+        "assetType": {
+          "type": "string",
+          "enum": ["COINS", "INR"]
+        },
+        "amount": {
+          "type": "integer"
+        },
+        "previousBalance": {
+          "type": "integer"
+        },
+        "newBalance": {
+          "type": "integer"
+        },
+        "referenceId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "idempotencyKey": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "status": {
+          "type": "string",
+          "enum": ["PENDING", "COMPLETED", "REJECTED", "FAILED"]
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "transactionId",
+        "uid",
+        "userId",
+        "type",
+        "amount",
+        "previousBalance",
+        "newBalance",
+        "referenceId",
+        "idempotencyKey",
+        "status",
+        "description",
+        "createdAt"
+      ]
+    },
+    "UserPlan": {
+      "title": "UserPlan",
+      "description": "User enrollment in a structured product-based virtual coin cycle.",
+      "type": "object",
+      "properties": {
+        "userPlanId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "userId": { "type": "string", "minLength": 8, "maxLength": 16, "pattern": "^NX[0-9]{6,10}$" },
+        "planId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "productName": { "type": "string", "maxLength": 120 },
+        "coinCost": { "type": "integer" },
+        "durationDays": { "type": "integer" },
+        "totalRewardEntitlement": { "type": "integer" },
+        "collectedReward": { "type": "integer" },
+        "remainingReward": { "type": "integer" },
+        "daysCompleted": { "type": "integer" },
+        "remainingDays": { "type": "integer" },
+        "status": { "type": "string", "enum": ["ACTIVE", "COMPLETED", "CANCELLED"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "userPlanId",
+        "uid",
+        "userId",
+        "planId",
+        "productName",
+        "coinCost",
+        "durationDays",
+        "totalRewardEntitlement",
+        "collectedReward",
+        "remainingReward",
+        "daysCompleted",
+        "remainingDays",
+        "status",
+        "createdAt"
+      ]
+    },
+    "DailyRewardRecord": {
+      "title": "DailyRewardRecord",
+      "description": "Single daily virtual coin reward distribution record.",
+      "type": "object",
+      "properties": {
+        "rewardId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "userPlanId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "userId": { "type": "string", "minLength": 8, "maxLength": 16, "pattern": "^NX[0-9]{6,10}$" },
+        "rewardDayNumber": { "type": "integer" },
+        "coinsCredited": { "type": "integer" },
+        "scheduledFor": { "type": "string", "format": "date-time" },
+        "creditedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "rewardId",
+        "userPlanId",
+        "uid",
+        "userId",
+        "rewardDayNumber",
+        "coinsCredited",
+        "scheduledFor",
+        "creditedAt"
+      ]
+    },
+    "ReferralCode": {
+      "title": "ReferralCode",
+      "description": "Maps a member permanent NX referral code to their Firebase UID without leaking PII.",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "minLength": 8, "maxLength": 16, "pattern": "^NX[0-9]{6,10}$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["code", "ownerUid", "createdAt"]
+    },
+    "ReferralRecord": {
+      "title": "ReferralRecord",
+      "description": "Anonymized referral attribution link for successful member sign-ups.",
+      "type": "object",
+      "properties": {
+        "referralId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "referrerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "referrerCode": { "type": "string", "minLength": 8, "maxLength": 16, "pattern": "^NX[0-9]{6,10}$" },
+        "referredUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "referredUserId": { "type": "string", "minLength": 8, "maxLength": 16, "pattern": "^NX[0-9]{6,10}$" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["referralId", "referrerUid", "referrerCode", "referredUid", "referredUserId", "createdAt"]
+    },
+    "UserActivityLog": {
+      "title": "UserActivityLog",
+      "description": "Append-only user security and account activity log.",
+      "type": "object",
+      "properties": {
+        "logId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "category": { "type": "string", "enum": ["LOGIN", "PROFILE_UPDATE", "PLAN_CHANGE", "SECURITY", "WALLET"] },
+        "action": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "details": { "type": "string", "maxLength": 300 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["logId", "uid", "category", "action", "details", "createdAt"]
+    },
+    "AdminActivityLog": {
+      "title": "AdminActivityLog",
+      "description": "Append-only administrative audit log capturing role changes, plan updates, UPI edits, and manual adjustments.",
+      "type": "object",
+      "properties": {
+        "logId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "actorUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "actorEmail": { "type": "string", "maxLength": 160 },
+        "actorRole": { "type": "string", "enum": ["ADMIN", "SUPER_ADMIN"] },
+        "actionType": {
+          "type": "string",
+          "enum": [
+            "USER_PROMOTED_TO_ADMIN",
+            "ADMIN_REVOKED",
+            "ADMIN_CREATED",
+            "USER_STATUS_UPDATED",
+            "WALLET_ADJUSTED",
+            "UPI_ACCOUNT_UPDATED",
+            "DEPOSIT_REVIEWED",
+            "WITHDRAWAL_REVIEWED",
+            "PRODUCT_PLAN_UPDATED",
+            "COIN_PACKAGE_UPDATED",
+            "PLATFORM_SETTINGS_UPDATED",
+            "PAYMENT_WEBHOOK_VERIFIED",
+            "PAYOUT_METHOD_REVIEWED"
+          ]
+        },
+        "targetId": { "type": "string", "maxLength": 128 },
+        "summary": { "type": "string", "minLength": 2, "maxLength": 300 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["logId", "actorUid", "actorEmail", "actorRole", "actionType", "targetId", "summary", "createdAt"]
+    },
+    "UpiAccount": {
+      "title": "UpiAccount",
+      "description": "Admin-managed UPI payment collection account.",
+      "type": "object",
+      "properties": {
+        "accountId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "upiId": { "type": "string", "minLength": 3, "maxLength": 120 },
+        "displayName": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "qrCodeImageUrl": { "type": "string", "maxLength": 50000 },
+        "isActive": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["accountId", "upiId", "displayName", "qrCodeImageUrl", "isActive", "updatedAt"]
+    },
+    "ProductPlan": {
+      "title": "ProductPlan",
+      "description": "Admin-configured structured product-based virtual coin plan.",
+      "type": "object",
+      "properties": {
+        "planId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "productName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "category": { "type": "string", "maxLength": 64 },
+        "imageUrl": { "type": "string", "maxLength": 500 },
+        "displayedValueInr": { "type": "integer" },
+        "planPriceInr": { "type": "integer" },
+        "coinDeductionAmount": { "type": "integer" },
+        "durationDays": { "type": "integer" },
+        "totalCoinReward": { "type": "integer" },
+        "dailyCoinRewardPreview": { "type": "integer" },
+        "tierName": { "type": "string", "minLength": 1, "maxLength": 48 },
+        "minCoins": { "type": "integer" },
+        "maxCoins": { "type": "integer" },
+        "dailyRewardPercent": { "type": "number" },
+        "description": { "type": "string", "maxLength": 500 },
+        "termsAndConditions": { "type": "string", "maxLength": 1000 },
+        "isActive": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "planId",
+        "productName",
+        "category",
+        "displayedValueInr",
+        "planPriceInr",
+        "coinDeductionAmount",
+        "durationDays",
+        "totalCoinReward",
+        "dailyCoinRewardPreview",
+        "isActive",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "CoinPackage": {
+      "title": "CoinPackage",
+      "description": "Admin-defined virtual coin package with INR pricing, 1:1 base coins, and optional flat or percentage bonus structure.",
+      "type": "object",
+      "properties": {
+        "packageId": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "priceInr": { "type": "integer" },
+        "baseCoins": { "type": "integer" },
+        "bonusType": { "type": "string", "enum": ["NONE", "PERCENTAGE", "FLAT_COINS"] },
+        "bonusValue": { "type": "number" },
+        "bonusCoins": { "type": "integer" },
+        "totalCoins": { "type": "integer" },
+        "badgeTag": { "type": "string", "maxLength": 24 },
+        "description": { "type": "string", "maxLength": 240 },
+        "sortOrder": { "type": "integer" },
+        "isActive": { "type": "boolean" },
+        "updatedByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "packageId",
+        "name",
+        "priceInr",
+        "baseCoins",
+        "bonusType",
+        "bonusValue",
+        "bonusCoins",
+        "totalCoins",
+        "description",
+        "sortOrder",
+        "isActive",
+        "updatedByUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "DepositRequest": {
+      "title": "DepositRequest",
+      "description": "User coin deposit request and admin verification status.",
+      "type": "object",
+      "properties": {
+        "depositId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "userId": { "type": "string", "minLength": 8, "maxLength": 16, "pattern": "^NX[0-9]{6,10}$" },
+        "amountInr": { "type": "integer" },
+        "coinsRequested": { "type": "integer" },
+        "packageId": { "type": "string", "maxLength": 64 },
+        "packageName": { "type": "string", "maxLength": 80 },
+        "baseCoins": { "type": "integer" },
+        "bonusCoins": { "type": "integer" },
+        "assignedUpiAccountId": { "type": "string", "maxLength": 128 },
+        "assignedUpiId": { "type": "string", "maxLength": 120 },
+        "assignedUpiDisplayName": { "type": "string", "maxLength": 100 },
+        "assignedQrImageUrl": { "type": "string", "maxLength": 50000 },
+        "utrNumber": { "type": "string", "minLength": 8, "maxLength": 36, "pattern": "^[a-zA-Z0-9]+$" },
+        "screenshotUrl": { "type": "string", "maxLength": 500 },
+        "status": { "type": "string", "enum": ["PENDING", "UNDER_REVIEW", "APPROVED", "REJECTED"] },
+        "rejectionReason": { "type": "string", "maxLength": 300 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "verifiedAt": { "type": "string", "format": "date-time" },
+        "verifiedByAdminUid": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["depositId", "uid", "userId", "amountInr", "coinsRequested", "assignedUpiAccountId", "assignedUpiId", "status", "createdAt"]
+    },
+    "PaymentTransaction": {
+      "title": "PaymentTransaction",
+      "description": "Backend-ready idempotent payment transaction lifecycle record linked to deposit orders, webhook verification, and atomic credit locks.",
+      "type": "object",
+      "properties": {
+        "paymentTxId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "depositId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 8, "maxLength": 16, "pattern": "^NX[0-9]{6,10}$" },
+        "provider": {
+          "type": "string",
+          "enum": ["UPI_GATEWAY", "RAZORPAY", "CASHFREE", "PHONEPE_PG", "PAYTM_PG", "PLACEHOLDER_WEBHOOK"]
+        },
+        "gatewayOrderId": { "type": "string", "maxLength": 128 },
+        "gatewayPaymentId": { "type": "string", "maxLength": 128 },
+        "utrReference": { "type": "string", "maxLength": 36, "pattern": "^[a-zA-Z0-9]+$" },
+        "amountInr": { "type": "integer" },
+        "coinsToCredit": { "type": "integer" },
+        "packageId": { "type": "string", "maxLength": 64 },
+        "bonusCoins": { "type": "integer" },
+        "currency": { "type": "string", "enum": ["INR"] },
+        "idempotencyKey": { "type": "string", "minLength": 4, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "creditLockId": { "type": "string", "minLength": 4, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "utrLockId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "verificationMethod": { "type": "string", "enum": ["ADMIN_SETTLEMENT", "WEBHOOK_PLACEHOLDER", "WEBHOOK_VERIFIED"] },
+        "webhookVerificationStatus": {
+          "type": "string",
+          "enum": ["NOT_RECEIVED", "PLACEHOLDER_VERIFIED", "SIGNATURE_VERIFIED", "SIGNATURE_REJECTED", "DUPLICATE_IGNORED"]
+        },
+        "lastWebhookEventId": { "type": "string", "maxLength": 128 },
+        "status": {
+          "type": "string",
+          "enum": ["INITIATED", "PENDING_VERIFICATION", "WEBHOOK_VERIFIED", "CREDITED", "DUPLICATE_BLOCKED", "FAILED", "REJECTED"]
+        },
+        "coinTransactionId": { "type": "string", "maxLength": 128 },
+        "failureReason": { "type": "string", "maxLength": 300 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "creditedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "paymentTxId",
+        "depositId",
+        "uid",
+        "userId",
+        "provider",
+        "amountInr",
+        "coinsToCredit",
+        "currency",
+        "idempotencyKey",
+        "creditLockId",
+        "verificationMethod",
+        "webhookVerificationStatus",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PaymentCreditLock": {
+      "title": "PaymentCreditLock",
+      "description": "Write-once deterministic idempotency lock preventing duplicate coin credits for the same deposit, UTR reference, or gateway payment.",
+      "type": "object",
+      "properties": {
+        "lockId": { "type": "string", "minLength": 4, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "lockScope": { "type": "string", "enum": ["DEPOSIT_ORDER", "UTR_REFERENCE", "GATEWAY_PAYMENT"] },
+        "paymentTxId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "depositId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "userId": { "type": "string", "minLength": 8, "maxLength": 16, "pattern": "^NX[0-9]{6,10}$" },
+        "coinsCredited": { "type": "integer" },
+        "coinTransactionId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "lockId",
+        "lockScope",
+        "paymentTxId",
+        "depositId",
+        "uid",
+        "userId",
+        "coinsCredited",
+        "coinTransactionId",
+        "createdByUid",
+        "createdAt"
+      ]
+    },
+    "PaymentWebhookEvent": {
+      "title": "PaymentWebhookEvent",
+      "description": "Immutable webhook verification audit event generated by the placeholder or live payment webhook verification service.",
+      "type": "object",
+      "properties": {
+        "eventId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "gatewayEventId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "provider": {
+          "type": "string",
+          "enum": ["UPI_GATEWAY", "RAZORPAY", "CASHFREE", "PHONEPE_PG", "PAYTM_PG", "PLACEHOLDER_WEBHOOK"]
+        },
+        "paymentTxId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "depositId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "utrReference": { "type": "string", "maxLength": 36 },
+        "amountInr": { "type": "integer" },
+        "signaturePresent": { "type": "boolean" },
+        "computedDigestPreview": { "type": "string", "maxLength": 128 },
+        "verificationStatus": {
+          "type": "string",
+          "enum": ["PLACEHOLDER_HOLD", "VERIFIED_READY_FOR_CREDIT", "DUPLICATE_IGNORED", "SIGNATURE_INVALID", "FAILED"]
+        },
+        "isLiveGatewayActive": { "type": "boolean" },
+        "note": { "type": "string", "maxLength": 300 },
+        "actorUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "eventId",
+        "gatewayEventId",
+        "provider",
+        "paymentTxId",
+        "depositId",
+        "amountInr",
+        "signaturePresent",
+        "computedDigestPreview",
+        "verificationStatus",
+        "isLiveGatewayActive",
+        "note",
+        "actorUid",
+        "createdAt"
+      ]
+    },
+    "UserPayoutMethod": {
+      "title": "UserPayoutMethod",
+      "description": "Member-owned UPI ID or Bank Account destination gated by ownership verification before real-money withdrawals.",
+      "type": "object",
+      "properties": {
+        "methodId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 8, "maxLength": 16, "pattern": "^NX[0-9]{6,10}$" },
+        "methodType": { "type": "string", "enum": ["UPI", "BANK_ACCOUNT"] },
+        "label": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "upiId": { "type": "string", "minLength": 5, "maxLength": 100 },
+        "upiProvider": { "type": "string", "maxLength": 40 },
+        "accountHolderName": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "bankName": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "accountNumber": { "type": "string", "minLength": 9, "maxLength": 18, "pattern": "^[0-9]{9,18}$" },
+        "accountNumberMasked": { "type": "string", "minLength": 4, "maxLength": 32 },
+        "accountLast4": { "type": "string", "minLength": 4, "maxLength": 4, "pattern": "^[0-9]{4}$" },
+        "ifscCode": { "type": "string", "minLength": 11, "maxLength": 11, "pattern": "^[A-Z]{4}0[A-Z0-9]{6}$" },
+        "accountType": { "type": "string", "enum": ["SAVINGS", "CURRENT"] },
+        "isDefault": { "type": "boolean" },
+        "verificationStatus": { "type": "string", "enum": ["PENDING_VERIFICATION", "VERIFIED", "REJECTED"] },
+        "verificationMethod": { "type": "string", "enum": ["ADMIN_REVIEW", "OWNERSHIP_CONFIRMED"] },
+        "verificationNote": { "type": "string", "maxLength": 300 },
+        "verifiedByAdminUid": { "type": "string", "maxLength": 128 },
+        "verifiedAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "methodId",
+        "uid",
+        "userId",
+        "methodType",
+        "label",
+        "isDefault",
+        "verificationStatus",
+        "verificationMethod",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "WithdrawalRequest": {
+      "title": "WithdrawalRequest",
+      "description": "User withdrawal request linked to a verified UPI or masked Bank Account payout method and admin settlement status.",
+      "type": "object",
+      "properties": {
+        "withdrawalId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "userId": { "type": "string", "minLength": 8, "maxLength": 16, "pattern": "^NX[0-9]{6,10}$" },
+        "amountInr": { "type": "integer" },
+        "payoutMethodId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "payoutMethodType": { "type": "string", "enum": ["UPI", "BANK_ACCOUNT"] },
+        "payoutLabel": { "type": "string", "maxLength": 60 },
+        "payoutDestinationMasked": { "type": "string", "maxLength": 120 },
+        "idempotencyKey": { "type": "string", "maxLength": 128 },
+        "status": { "type": "string", "enum": ["PENDING", "PROCESSING", "UNDER_REVIEW", "APPROVED", "REJECTED", "COMPLETED", "PAID"] },
+        "remarks": { "type": "string", "maxLength": 300 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "paidAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["withdrawalId", "uid", "userId", "amountInr", "status", "createdAt", "updatedAt"]
+    },
+    "PlatformSettings": {
+      "title": "PlatformSettings",
+      "description": "Super Admin governed platform configuration, authentication controls, and audit log retention policies.",
+      "type": "object",
+      "properties": {
+        "settingId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "payoutsEnabled": { "type": "boolean" },
+        "registrationsEnabled": { "type": "boolean" },
+        "supportEmail": { "type": "string", "maxLength": 160 },
+        "supportPhone": { "type": "string", "maxLength": 30 },
+        "securityNotice": { "type": "string", "maxLength": 300 },
+        "requireEmailVerification": { "type": "boolean" },
+        "enforceAdminMfaOrOtp": { "type": "boolean" },
+        "sessionTimeoutMinutes": { "type": "integer" },
+        "maxAdminLoginAttempts": { "type": "integer" },
+        "auditLogRetentionDays": { "type": "integer" },
+        "upiDepositsEnabled": { "type": "boolean" },
+        "minDepositInr": { "type": "integer" },
+        "maxDepositInr": { "type": "integer" },
+        "coinPackagesCsv": { "type": "string", "minLength": 3, "maxLength": 80, "pattern": "^[0-9]{2,6}(,[0-9]{2,6}){0,7}$" },
+        "updatedByUid": { "type": "string", "maxLength": 128 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["settingId", "payoutsEnabled", "registrationsEnabled", "supportEmail", "supportPhone", "updatedByUid", "updatedAt"]
+    },
+    "AdminLoginAttempt": {
+      "title": "AdminLoginAttempt",
+      "description": "Append-only telemetry record of admin portal sign-in outcomes for Super Admin security monitoring.",
+      "type": "object",
+      "properties": {
+        "attemptId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 160 },
+        "role": { "type": "string", "enum": ["USER", "ADMIN", "SUPER_ADMIN"] },
+        "outcome": { "type": "string", "enum": ["SUCCESS", "DENIED_NOT_ADMIN"] },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["attemptId", "uid", "email", "role", "outcome", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Stores verified user profile metadata and immutable NX User ID."
+    },
+    "/identityLocks/{lockId}": {
+      "schema": { "$ref": "#/entities/IdentityLock" },
+      "description": "Hashed email and mobile uniqueness locks."
+    },
+    "/counters/{counterId}": {
+      "schema": { "$ref": "#/entities/SystemCounter" },
+      "description": "Atomic sequence counter for NX User ID generation."
+    },
+    "/coinWallets/{userId}": {
+      "schema": { "$ref": "#/entities/CoinWallet" },
+      "description": "Segregated virtual coin balances initialized at zero."
+    },
+    "/coinTransactions/{transactionId}": {
+      "schema": { "$ref": "#/entities/CoinTransaction" },
+      "description": "Immutable virtual coin ledger for deposits, daily rewards, plan purchases, and withdrawals."
+    },
+    "/userPlans/{userPlanId}": {
+      "schema": { "$ref": "#/entities/UserPlan" },
+      "description": "User-owned structured plan enrollments and collected reward progress."
+    },
+    "/dailyRewards/{rewardId}": {
+      "schema": { "$ref": "#/entities/DailyRewardRecord" },
+      "description": "Scheduled daily virtual coin reward credit records."
+    },
+    "/adminUsers/{adminId}": {
+      "schema": { "$ref": "#/entities/AdminUser" },
+      "description": "Trusted administrator directory separating SUPER_ADMIN and ADMIN roles."
+    },
+    "/referralCodes/{code}": {
+      "schema": { "$ref": "#/entities/ReferralCode" },
+      "description": "Permanent NX code to UID mapping for referral attribution."
+    },
+    "/referrals/{referralId}": {
+      "schema": { "$ref": "#/entities/ReferralRecord" },
+      "description": "PII-free referral sign-up attribution records."
+    },
+    "/userActivityLogs/{logId}": {
+      "schema": { "$ref": "#/entities/UserActivityLog" },
+      "description": "Append-only user security and account activity log."
+    },
+    "/adminActivityLogs/{logId}": {
+      "schema": { "$ref": "#/entities/AdminActivityLog" },
+      "description": "Append-only administrative audit trail."
+    },
+    "/upiAccounts/{accountId}": {
+      "schema": { "$ref": "#/entities/UpiAccount" },
+      "description": "Admin-managed UPI payment collection accounts."
+    },
+    "/productPlans/{planId}": {
+      "schema": { "$ref": "#/entities/ProductPlan" },
+      "description": "Admin-managed structured product plans."
+    },
+    "/coinPackages/{packageId}": {
+      "schema": { "$ref": "#/entities/CoinPackage" },
+      "description": "Admin-defined virtual coin packages with INR pricing and bonus structures."
+    },
+    "/depositRequests/{depositId}": {
+      "schema": { "$ref": "#/entities/DepositRequest" },
+      "description": "User coin deposit requests and admin approvals."
+    },
+    "/paymentTransactions/{paymentTxId}": {
+      "schema": { "$ref": "#/entities/PaymentTransaction" },
+      "description": "Idempotent payment gateway & UPI settlement tracking records."
+    },
+    "/paymentCreditLocks/{lockId}": {
+      "schema": { "$ref": "#/entities/PaymentCreditLock" },
+      "description": "Immutable write-once uniqueness locks preventing duplicate coin credits."
+    },
+    "/paymentWebhookEvents/{eventId}": {
+      "schema": { "$ref": "#/entities/PaymentWebhookEvent" },
+      "description": "Append-only payment webhook verification audit log."
+    },
+    "/userPayoutMethods/{methodId}": {
+      "schema": { "$ref": "#/entities/UserPayoutMethod" },
+      "description": "Owner-isolated and admin-verified member UPI IDs and masked Bank Accounts."
+    },
+    "/withdrawalRequests/{withdrawalId}": {
+      "schema": { "$ref": "#/entities/WithdrawalRequest" },
+      "description": "User withdrawal requests and admin settlement status."
+    },
+    "/platformSettings/{settingId}": {
+      "schema": { "$ref": "#/entities/PlatformSettings" },
+      "description": "Super Admin platform configuration and security controls."
+    },
+    "/adminLoginAttempts/{attemptId}": {
+      "schema": { "$ref": "#/entities/AdminLoginAttempt" },
+      "description": "Immutable log of Admin Portal authentication attempts and denied escalation events."
+    }
+  }
+}

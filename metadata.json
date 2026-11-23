@@ -1,0 +1,6 @@
+{
+  "name": "NEXORA INVEST",
+  "description": "NEXORA INVEST — Product-based virtual coin platform with structured plan cycles, automated daily coin distribution, and transparent ledger architecture.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
