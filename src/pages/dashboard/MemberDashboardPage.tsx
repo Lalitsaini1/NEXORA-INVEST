@@ -13,6 +13,7 @@ import {
 import { LoadingScreen } from '../../components/common/LoadingScreen';
 import { CoinBalanceGrowthChart } from '../../components/dashboard/CoinBalanceGrowthChart';
 import { DailyRewardBreakdown } from '../../components/dashboard/DailyRewardBreakdown';
+import { InvestmentHistory } from '../../components/dashboard/InvestmentHistory';
 import { MarketNewsTicker } from '../../components/dashboard/MarketNewsTicker';
 import { MemberActivityLog } from '../../components/dashboard/MemberActivityLog';
 import { ProTipsBanner } from '../../components/dashboard/ProTipsBanner';
@@ -306,6 +307,9 @@ export function MemberDashboardPage() {
             </p>
           </div>
         </section>
+
+        {/* Investment History (Live Firestore past plans, deposits, rewards, and payouts) */}
+        <InvestmentHistory uid={firebaseUser.uid} highContrast={isHighContrast} />
 
         {/* Add Coins via Authorized UPI Gateway */}
         <UpiPaymentGateway
