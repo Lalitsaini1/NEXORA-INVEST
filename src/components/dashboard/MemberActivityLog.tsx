@@ -25,7 +25,10 @@ function getCategoryMeta(category: UserActivityCategory) {
       return { label: 'Profile', Icon: UserCheck };
     case 'PLAN_CHANGE':
       return { label: 'Plan Change', Icon: History };
+    case 'WALLET':
+      return { label: 'Wallet', Icon: History };
     case 'SECURITY':
+    default:
       return { label: 'Security', Icon: ShieldCheck };
   }
 }

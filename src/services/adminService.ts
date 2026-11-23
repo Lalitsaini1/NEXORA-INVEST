@@ -1718,7 +1718,7 @@ export function subscribeAllTransactions(
             uid: String(data.uid || ''),
             userId: String(data.userId || ''),
             type: (data.type as TransactionType) || 'ADMIN_ADJUSTMENT',
-            assetType: data.assetType === 'INR' ? 'INR' : 'COINS',
+            assetType: (data.assetType === 'INR' ? 'INR' : 'COINS') as 'COINS' | 'INR',
             amount: Number(data.amount || 0),
             previousBalance: Number(data.previousBalance || 0),
             newBalance: Number(data.newBalance || 0),
