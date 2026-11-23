@@ -1,6 +1,7 @@
 import {
   CoinTransaction,
   DepositRequest,
+  InvestmentRequest,
   UserPlan,
   WithdrawalRequest,
 } from '../types/domain';
@@ -60,6 +61,8 @@ function mapStatusMetadata(rawStatus: string): {
   switch (upper) {
     case 'ACTIVE':
       return { statusLabel: 'Active', statusBucket: 'ACTIVE' };
+    case 'ACTIVATED':
+      return { statusLabel: 'Activated', statusBucket: 'ACTIVE' };
     case 'COMPLETED':
       return { statusLabel: 'Completed', statusBucket: 'COMPLETED' };
     case 'APPROVED':
@@ -68,6 +71,8 @@ function mapStatusMetadata(rawStatus: string): {
       return { statusLabel: 'Paid', statusBucket: 'COMPLETED' };
     case 'PENDING':
       return { statusLabel: 'Pending', statusBucket: 'PENDING' };
+    case 'PENDING_VERIFICATION':
+      return { statusLabel: 'Pending Verification', statusBucket: 'PENDING' };
     case 'PROCESSING':
       return { statusLabel: 'Processing', statusBucket: 'PENDING' };
     case 'UNDER_REVIEW':
@@ -85,11 +90,13 @@ function mapStatusMetadata(rawStatus: string): {
 
 export function buildInvestmentHistoryEntries(params: {
   plans?: UserPlan[];
+  investmentRequests?: InvestmentRequest[];
   transactions?: CoinTransaction[];
   deposits?: DepositRequest[];
   withdrawals?: WithdrawalRequest[];
 }): InvestmentHistoryEntry[] {
   const plans = params.plans ?? [];
+  const investmentRequests = params.investmentRequests ?? [];
   const transactions = params.transactions ?? [];
   const deposits = params.deposits ?? [];
   const withdrawals = params.withdrawals ?? [];
@@ -249,6 +256,34 @@ export function buildInvestmentHistoryEntries(params: {
       numericCoinValue: coinsRequested,
       numericInrValue: amountInr,
       rawStatus: dep.status,
+      statusLabel,
+      statusBucket,
+    });
+  }
+
+  // 5. Investment Requests not already represented by an activated UserPlan
+  for (const req of investmentRequests) {
+    if (req.activatedUserPlanId && planIdsFromPlans.has(req.activatedUserPlanId)) {
+      continue;
+    }
+    const { statusLabel, statusBucket } = mapStatusMetadata(req.status);
+    const coinCost = Math.max(0, Math.round(req.coinCost));
+    const planPriceInr = Math.max(0, Math.round(req.planPriceInr));
+    entries.push({
+      id: `invreq_${req.requestId}`,
+      category: 'PLAN',
+      title: `${req.productName || 'Structured Plan'} (Request)`,
+      subtitle:
+        req.failureReason ||
+        `${req.durationDays}d cycle · Payment: ${req.paymentStatus.replace(/_/g, ' ')}`,
+      referenceId: req.requestId,
+      dateIso: req.createdAt || req.updatedAt,
+      amountDisplay: formatCoins(coinCost),
+      secondaryAmountDisplay: `${formatInr(planPriceInr)} equiv.`,
+      isCredit: false,
+      numericCoinValue: req.status === 'FAILED' || req.status === 'REJECTED' ? 0 : coinCost,
+      numericInrValue: planPriceInr,
+      rawStatus: req.status,
       statusLabel,
       statusBucket,
     });

@@ -17,6 +17,7 @@ import { useAuth } from '../../context/AuthContext';
 import { investInProductPlan } from '../../services/planService';
 import { CoinWallet, ProductPlan, UserPlan, UserProfile } from '../../types/domain';
 import { calculateDailyDistribution, formatCoins, formatInr } from '../../utils/formatters';
+import { formatPlanInvestmentError } from '../../utils/planErrorFormatter';
 import { evaluatePlanInvestmentEligibility } from '../../utils/planInvestment';
 import { buildAuthUrlWithPlan } from '../../utils/planNavigation';
 
@@ -50,6 +51,7 @@ export function PlanInvestmentModal({
   const [confirmedPlan, setConfirmedPlan] = useState<UserPlan | null>(null);
   const [coinTxId, setCoinTxId] = useState<string | null>(null);
   const [savedRequestId, setSavedRequestId] = useState<string | null>(null);
+  const [verifiedInFirestore, setVerifiedInFirestore] = useState(false);
   const [idempotencyKey, setIdempotencyKey] = useState(() =>
     createSessionIdempotencyKey(plan.planId)
   );
@@ -61,6 +63,7 @@ export function PlanInvestmentModal({
     setConfirmedPlan(null);
     setCoinTxId(null);
     setSavedRequestId(null);
+    setVerifiedInFirestore(false);
     setIdempotencyKey(createSessionIdempotencyKey(plan.planId));
   }, [plan.planId]);
 
@@ -85,6 +88,7 @@ export function PlanInvestmentModal({
   const handleConfirmInvestment = async () => {
     if (submitting || !profile || !wallet) return;
     setError(null);
+    setSavedRequestId(null);
 
     if (!firebaseUser || profile.uid !== firebaseUser.uid) {
       setError('Active Firebase Authentication session mismatch. Please sign in again.');
@@ -108,12 +112,13 @@ export function PlanInvestmentModal({
       setConfirmedPlan(result.userPlan);
       setCoinTxId(result.coinTransactionId);
       setSavedRequestId(result.requestId);
+      setVerifiedInFirestore(result.verifiedInFirestore);
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : 'Unable to activate investment plan. Please verify your wallet balance and try again.'
-      );
+      const formatted = formatPlanInvestmentError(err);
+      setError(formatted.message);
+      if (formatted.savedAsPending && formatted.requestId) {
+        setSavedRequestId(formatted.requestId);
+      }
     } finally {
       setSubmitting(false);
     }
@@ -225,8 +230,15 @@ export function PlanInvestmentModal({
                   </div>
                 )}
                 {savedRequestId && (
-                  <div className="sm:col-span-2">
-                    <span className="text-emerald-700">Request ID:</span> {savedRequestId}
+                  <div className="sm:col-span-2 flex flex-wrap items-center justify-between gap-2">
+                    <span>
+                      <span className="text-emerald-700">Request ID:</span> {savedRequestId}
+                    </span>
+                    {verifiedInFirestore && (
+                      <span className="text-[11px] font-sans font-semibold text-emerald-800">
+                        Verified in Firestore
+                      </span>
+                    )}
                   </div>
                 )}
               </div>
@@ -351,9 +363,14 @@ export function PlanInvestmentModal({
                 {error && (
                   <div
                     role="alert"
-                    className="p-3 text-xs sm:text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg"
+                    className="p-3 text-xs sm:text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg space-y-1.5"
                   >
-                    {error}
+                    <p>{error}</p>
+                    {savedRequestId && (
+                      <p className="text-xs font-mono text-red-900">
+                        Saved Request ID: {savedRequestId} (Status: PENDING_VERIFICATION)
+                      </p>
+                    )}
                   </div>
                 )}
 

@@ -1,0 +1,24 @@
+{
+  "firestore": [
+    {
+      "database": "ai-studio-nexorainvest-5bfd69ce-b6b9-406b-b8b5-777b72b7226f",
+      "rules": "firestore.rules"
+    }
+  ],
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "default",
+      "ignore": [
+        "node_modules",
+        ".git",
+        "firebase-debug.log",
+        "firebase-debug.*.log",
+        "*.local"
+      ],
+      "predeploy": [
+        "npm --prefix \"$RESOURCE_DIR\" run build"
+      ]
+    }
+  ]
+}

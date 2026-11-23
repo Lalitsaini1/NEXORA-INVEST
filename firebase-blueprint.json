@@ -877,6 +877,18 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["to", "message", "uid", "referenceId", "createdAt"]
+    },
+    "BackendIdempotencyLock": {
+      "title": "BackendIdempotencyLock",
+      "description": "Server-only write-once idempotency lock created via Firebase Admin SDK inside Cloud Functions to block duplicate requests, plan activations, or withdrawals.",
+      "type": "object",
+      "properties": {
+        "lockId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "requestId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["lockId", "uid", "createdAt"]
     }
   },
   "firestore": {
@@ -979,6 +991,18 @@
     "/mail/{mailId}": {
       "schema": { "$ref": "#/entities/MailQueueDocument" },
       "description": "Backend-only outbound email queue processed by the Firebase Trigger Email from Firestore extension."
+    },
+    "/investmentRequestLocks/{lockId}": {
+      "schema": { "$ref": "#/entities/BackendIdempotencyLock" },
+      "description": "Backend-only idempotency locks enforcing unique investmentRequest creation per idempotency key."
+    },
+    "/investmentLocks/{lockId}": {
+      "schema": { "$ref": "#/entities/BackendIdempotencyLock" },
+      "description": "Backend-only idempotency locks enforcing unique plan activation per investment request."
+    },
+    "/withdrawalLocks/{lockId}": {
+      "schema": { "$ref": "#/entities/BackendIdempotencyLock" },
+      "description": "Backend-only idempotency locks enforcing unique INR withdrawal submission."
     }
   }
 }

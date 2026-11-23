@@ -14,6 +14,7 @@ import { httpsCallable } from 'firebase/functions';
 import { ILLUSTRATIVE_PLANS } from '../data/catalogPreview';
 import { OperationType, auth, db, functions, handleFirestoreError } from '../firebase/client';
 import { InvestmentRequest, ProductPlan, UserPlan } from '../types/domain';
+import { InvestmentStageError } from '../utils/planErrorFormatter';
 import { evaluatePlanInvestmentEligibility } from '../utils/planInvestment';
 
 function toIso(raw: unknown): string {
@@ -142,6 +143,12 @@ export function subscribeUserInvestmentRequests(
   );
 }
 
+interface CreateInvestmentRequestCallableResponse {
+  requestId: string;
+  investmentRequest: InvestmentRequest;
+  deduplicated?: boolean;
+}
+
 interface InvestInPlanCallableResponse {
   userPlan: UserPlan;
   coinTransactionId: string;
@@ -150,11 +157,18 @@ interface InvestInPlanCallableResponse {
   deduplicated?: boolean;
 }
 
+function getFirebaseErrorCode(err: unknown): string {
+  return typeof err === 'object' && err !== null && 'code' in err
+    ? String((err as { code: unknown }).code)
+    : '';
+}
+
 /**
- * Verifies user authentication, records a permitted PENDING_VERIFICATION investment
- * request in Firestore, and invokes the backend Cloud Function `investInPlan` to
- * atomically verify verified wallet balance, enforce idempotency locks, debit coins,
- * and activate the UserPlan record.
+ * Securely creates a backend-governed `investmentRequests/{requestId}` document via the
+ * `createInvestmentRequest` Cloud Function (falling back to rule-validated client
+ * PENDING_VERIFICATION creation only if Cloud Functions are not yet deployed), verifies the
+ * request record in Firestore, and invokes `investInPlan` to validate coin balance and
+ * activate the UserPlan record exclusively on the server.
  */
 export async function investInProductPlan(params: {
   uid: string;
@@ -167,6 +181,8 @@ export async function investInProductPlan(params: {
   coinTransactionId: string;
   newAvailableCoins: number;
   requestId: string;
+  verifiedInFirestore: boolean;
+  creationMode: 'CLOUD_FUNCTION' | 'FIRESTORE_RULES_FALLBACK';
 }> {
   const cleanUid = params.uid.trim();
   const cleanUserId = params.userId.trim();
@@ -223,36 +239,160 @@ export async function investInProductPlan(params: {
     throw new Error(eligibility.reason || 'Selected investment plan is currently unavailable.');
   }
 
-  const requestId = createId('invreq');
+  let requestId = createId('invreq');
   const rawKey = params.idempotencyKey || `${cleanUid}_${requestId}`;
   const idempotencyKey =
     rawKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128) || `${cleanUid}_${requestId}`;
 
-  // Step 1: Create permitted PENDING_VERIFICATION request in Firestore
-  const reqRef = doc(db, 'investmentRequests', requestId);
+  const expectedPlanPriceInr = Math.max(1, Math.round(authoritativePlan.planPriceInr));
+  const expectedCoinCost = Math.max(1, Math.round(authoritativePlan.coinDeductionAmount));
+
+  // Primary path: unified server-controlled `processInvestmentRequest` Cloud Function
+  // Sends only plan selection, terms acceptance, idempotency key, and display expectations.
+  // Never sends financial overrides (coinCost, totalRewardEntitlement, status, uid, wallet).
   try {
-    await setDoc(reqRef, {
-      requestId,
-      uid: cleanUid,
-      userId: cleanUserId,
+    const processFn = httpsCallable<
+      {
+        planId: string;
+        acceptedTerms: boolean;
+        idempotencyKey: string;
+        expectedPlanPriceInr: number;
+        expectedCoinCost: number;
+      },
+      InvestInPlanCallableResponse
+    >(functions, 'processInvestmentRequest');
+
+    const response = await processFn({
       planId: authoritativePlan.planId,
-      productName: authoritativePlan.productName.slice(0, 120),
-      planPriceInr: Math.max(1, Math.round(authoritativePlan.planPriceInr)),
-      coinCost: Math.max(1, Math.round(authoritativePlan.coinDeductionAmount)),
-      durationDays: Math.max(1, Math.round(authoritativePlan.durationDays)),
-      totalRewardEntitlement: Math.max(0, Math.round(authoritativePlan.totalCoinReward)),
       acceptedTerms: true,
       idempotencyKey,
-      status: 'PENDING_VERIFICATION',
-      paymentStatus: 'PENDING',
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
+      expectedPlanPriceInr,
+      expectedCoinCost,
     });
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, `investmentRequests/${requestId}`);
+
+    if (!response.data || !response.data.userPlan) {
+      throw new InvestmentStageError(
+        'Unexpected response from backend investment processing service.',
+        { savedAsPending: false, creationMode: 'CLOUD_FUNCTION' }
+      );
+    }
+
+    const finalRequestId = response.data.requestId || requestId;
+    let verifiedInFirestore = false;
+    try {
+      const checkSnap = await getDoc(doc(db, 'investmentRequests', finalRequestId));
+      verifiedInFirestore = checkSnap.exists();
+    } catch {
+      verifiedInFirestore = false;
+    }
+
+    return {
+      userPlan: response.data.userPlan,
+      coinTransactionId: response.data.coinTransactionId,
+      newAvailableCoins: Number(response.data.newAvailableCoins || 0),
+      requestId: finalRequestId,
+      verifiedInFirestore,
+      creationMode: 'CLOUD_FUNCTION',
+    };
+  } catch (processErr) {
+    const fnCode = getFirebaseErrorCode(processErr);
+    const functionsUnavailable =
+      fnCode === 'functions/not-found' ||
+      fnCode === 'functions/unavailable' ||
+      fnCode === 'functions/unimplemented';
+
+    if (!functionsUnavailable) {
+      if (processErr instanceof InvestmentStageError) {
+        throw processErr;
+      }
+      throw new InvestmentStageError(
+        processErr instanceof Error
+          ? processErr.message
+          : 'Unable to validate and process investment request on the backend.',
+        { code: fnCode, savedAsPending: false, creationMode: 'CLOUD_FUNCTION' }
+      );
+    }
   }
 
-  // Step 2: Verify balance & activate exclusively through backend Cloud Function `investInPlan`
+  let creationMode: 'CLOUD_FUNCTION' | 'FIRESTORE_RULES_FALLBACK' = 'CLOUD_FUNCTION';
+
+  // Legacy/Split Fallback Step 1: `createInvestmentRequest` or rule-validated `PENDING_VERIFICATION` write
+  try {
+    const createReqFn = httpsCallable<
+      {
+        planId: string;
+        acceptedTerms: boolean;
+        idempotencyKey: string;
+        expectedPlanPriceInr: number;
+        expectedCoinCost: number;
+      },
+      CreateInvestmentRequestCallableResponse
+    >(functions, 'createInvestmentRequest');
+
+    const createdResp = await createReqFn({
+      planId: authoritativePlan.planId,
+      acceptedTerms: true,
+      idempotencyKey,
+      expectedPlanPriceInr,
+      expectedCoinCost,
+    });
+
+    if (createdResp.data?.requestId) {
+      requestId = createdResp.data.requestId;
+    }
+  } catch (createFnErr) {
+    const fnCode = getFirebaseErrorCode(createFnErr);
+    const functionsUnavailable =
+      fnCode === 'functions/not-found' ||
+      fnCode === 'functions/unavailable' ||
+      fnCode === 'functions/unimplemented';
+
+    if (!functionsUnavailable) {
+      throw new InvestmentStageError(
+        createFnErr instanceof Error
+          ? createFnErr.message
+          : 'Unable to create verified investment request on the server.',
+        { code: fnCode, savedAsPending: false }
+      );
+    }
+
+    // Fallback when Cloud Function is not yet deployed: strict rule-validated client write
+    // (PENDING_VERIFICATION / PENDING only; zero balance or activation mutation allowed).
+    creationMode = 'FIRESTORE_RULES_FALLBACK';
+    const reqRef = doc(db, 'investmentRequests', requestId);
+    try {
+      await setDoc(reqRef, {
+        requestId,
+        uid: cleanUid,
+        userId: cleanUserId,
+        planId: authoritativePlan.planId,
+        productName: authoritativePlan.productName.slice(0, 120),
+        planPriceInr: expectedPlanPriceInr,
+        coinCost: expectedCoinCost,
+        durationDays: Math.max(1, Math.round(authoritativePlan.durationDays)),
+        totalRewardEntitlement: Math.max(0, Math.round(authoritativePlan.totalCoinReward)),
+        acceptedTerms: true,
+        idempotencyKey,
+        status: 'PENDING_VERIFICATION',
+        paymentStatus: 'PENDING',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    } catch (writeErr) {
+      handleFirestoreError(writeErr, OperationType.WRITE, `investmentRequests/${requestId}`);
+    }
+  }
+
+  // Verify the persisted investment request exists in Firestore
+  let verifiedInFirestore = false;
+  try {
+    const checkSnap = await getDoc(doc(db, 'investmentRequests', requestId));
+    verifiedInFirestore = checkSnap.exists();
+  } catch {
+    verifiedInFirestore = false;
+  }
+
+  // Activate exclusively through backend Cloud Function `investInPlan`
   try {
     const investFn = httpsCallable<
       {
@@ -260,6 +400,8 @@ export async function investInProductPlan(params: {
         planId: string;
         acceptedTerms: boolean;
         idempotencyKey: string;
+        expectedPlanPriceInr: number;
+        expectedCoinCost: number;
       },
       InvestInPlanCallableResponse
     >(functions, 'investInPlan');
@@ -269,10 +411,15 @@ export async function investInProductPlan(params: {
       planId: authoritativePlan.planId,
       acceptedTerms: true,
       idempotencyKey,
+      expectedPlanPriceInr,
+      expectedCoinCost,
     });
 
     if (!response.data || !response.data.userPlan) {
-      throw new Error('Unexpected response from backend investment verification service.');
+      throw new InvestmentStageError(
+        'Unexpected response from backend investment verification service.',
+        { requestId, savedAsPending: true, creationMode }
+      );
     }
 
     return {
@@ -280,22 +427,37 @@ export async function investInProductPlan(params: {
       coinTransactionId: response.data.coinTransactionId,
       newAvailableCoins: Number(response.data.newAvailableCoins || 0),
       requestId: response.data.requestId || requestId,
+      verifiedInFirestore,
+      creationMode,
     };
   } catch (err) {
-    const code =
-      typeof err === 'object' && err !== null && 'code' in err
-        ? String((err as { code: unknown }).code)
-        : '';
+    const code = getFirebaseErrorCode(err);
 
-    if (code === 'functions/not-found' || code === 'functions/unavailable') {
-      throw new Error(
-        `Your investment request (${requestId}) was securely saved as PENDING_VERIFICATION, but the backend Cloud Function "investInPlan" is not deployed or unreachable on this Firebase project.`
+    if (
+      code === 'functions/not-found' ||
+      code === 'functions/unavailable' ||
+      code === 'functions/unimplemented'
+    ) {
+      throw new InvestmentStageError(
+        `Your investment request (${requestId}) was saved as PENDING_VERIFICATION, but the backend Cloud Functions ("processInvestmentRequest" / "investInPlan") are not deployed or unreachable on this Firebase project.`,
+        { requestId, savedAsPending: true, code, creationMode }
       );
     }
-    if (err instanceof Error && err.message) {
+    if (err instanceof InvestmentStageError) {
       throw err;
     }
-    throw new Error('Unable to complete backend investment verification. Please try again.');
+    if (err instanceof Error && err.message) {
+      throw new InvestmentStageError(err.message, {
+        requestId,
+        savedAsPending: true,
+        code,
+        creationMode,
+      });
+    }
+    throw new InvestmentStageError(
+      'Unable to complete backend investment verification. Please try again.',
+      { requestId, savedAsPending: true, code, creationMode }
+    );
   }
 }
 

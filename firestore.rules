@@ -278,16 +278,17 @@ service cloud.firestore {
         exists(/databases/$(database)/documents/productPlans/$(data.planId)) &&
         get(/databases/$(database)/documents/productPlans/$(data.planId)).data.isActive == true &&
         data.productName == get(/databases/$(database)/documents/productPlans/$(data.planId)).data.productName &&
+        data.planPriceInr == get(/databases/$(database)/documents/productPlans/$(data.planId)).data.planPriceInr &&
         data.coinCost == get(/databases/$(database)/documents/productPlans/$(data.planId)).data.coinDeductionAmount &&
         data.durationDays == get(/databases/$(database)/documents/productPlans/$(data.planId)).data.durationDays &&
         data.totalRewardEntitlement == get(/databases/$(database)/documents/productPlans/$(data.planId)).data.totalCoinReward
       ) || (
         !exists(/databases/$(database)/documents/productPlans/$(data.planId)) &&
         (
-          (data.planId == 'PLAN_LAPTOP_100' && data.productName == 'Laptop Plan' && data.coinCost == 100 && data.durationDays == 7 && data.totalRewardEntitlement == 188) ||
-          (data.planId == 'PLAN_MACHINERY_500' && data.productName == 'Machinery Plan' && data.coinCost == 500 && data.durationDays == 14 && data.totalRewardEntitlement == 650) ||
-          (data.planId == 'PLAN_SERVER_1000' && data.productName == 'Compute Node Plan' && data.coinCost == 1000 && data.durationDays == 21 && data.totalRewardEntitlement == 1320) ||
-          (data.planId == 'PLAN_ENERGY_5000' && data.productName == 'Grid Storage Plan' && data.coinCost == 5000 && data.durationDays == 30 && data.totalRewardEntitlement == 6600)
+          (data.planId == 'PLAN_LAPTOP_100' && data.productName == 'Laptop Plan' && data.planPriceInr == 100 && data.coinCost == 100 && data.durationDays == 7 && data.totalRewardEntitlement == 188) ||
+          (data.planId == 'PLAN_MACHINERY_500' && data.productName == 'Machinery Plan' && data.planPriceInr == 500 && data.coinCost == 500 && data.durationDays == 14 && data.totalRewardEntitlement == 650) ||
+          (data.planId == 'PLAN_SERVER_1000' && data.productName == 'Compute Node Plan' && data.planPriceInr == 1000 && data.coinCost == 1000 && data.durationDays == 21 && data.totalRewardEntitlement == 1320) ||
+          (data.planId == 'PLAN_ENERGY_5000' && data.productName == 'Grid Storage Plan' && data.planPriceInr == 5000 && data.coinCost == 5000 && data.durationDays == 30 && data.totalRewardEntitlement == 6600)
         )
       );
     }
@@ -1051,6 +1052,7 @@ service cloud.firestore {
         !exists(/databases/$(database)/documents/investmentRequests/$(requestId)) &&
         exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status == 'ACTIVE' &&
+        incoming().userId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.userId &&
         isMatchingActiveCatalogOrPublishedPlan(incoming());
 
       allow update: if isSignedIn() &&
@@ -1494,6 +1496,17 @@ service cloud.firestore {
     match /mail/{mailId} {
       allow get, list: if isAdmin();
       allow create, update, delete: if false;
+    }
+
+    // Backend Cloud Function Idempotency Locks (Admin SDK only; zero browser client access)
+    match /investmentRequestLocks/{lockId} {
+      allow read, write: if false;
+    }
+    match /investmentLocks/{lockId} {
+      allow read, write: if false;
+    }
+    match /withdrawalLocks/{lockId} {
+      allow read, write: if false;
     }
   }
 }

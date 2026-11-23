@@ -178,6 +178,16 @@ test('firestore.rules enforces default-deny, zero-plaintext password, and strict
     rules,
     /match \/mail\/\{mailId\}[\s\S]*allow get, list: if isAdmin\(\);[\s\S]*allow create, update, delete: if false;/
   );
-});
 
+  // 23. Hardened investmentRequests client fallback checks planPriceInr & userId parity, and lock collections deny all client access
+  assert.match(rules, /data\.planPriceInr == get\(\/databases\/\$\(database\)\/documents\/productPlans\/\$\(data\.planId\)\)\.data\.planPriceInr/);
+  assert.match(rules, /incoming\(\)\.userId == get\(\/databases\/\$\(database\)\/documents\/users\/\$\(request\.auth\.uid\)\)\.data\.userId/);
+  for (const lockCollection of ['investmentRequestLocks', 'investmentLocks', 'withdrawalLocks']) {
+    assert.ok(`/${lockCollection}/{lockId}` in blueprint.firestore, `Missing blueprint lock path: ${lockCollection}`);
+    assert.match(
+      rules,
+      new RegExp(`match /${lockCollection}/\\{lockId\\}[\\s\\S]*allow read, write: if false;`)
+    );
+  }
+});
 

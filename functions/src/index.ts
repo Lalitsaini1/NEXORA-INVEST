@@ -10,6 +10,15 @@ import {
   isPendingToActiveTransition,
   isValidEmailAddress,
 } from './planActivationEmail';
+import {
+  buildDeterministicLockId,
+  BuiltInPlanSpec,
+  buildPendingInvestmentRequestDoc,
+  detectTamperedServerFields,
+  resolveAuthoritativePlanSpec,
+  sanitizeIdentifier,
+  validatePlanAmountsMatch,
+} from './investmentRequestValidation';
 
 const PROJECT_ID = process.env.GCLOUD_PROJECT || 'gen-lang-client-0957030568';
 const MAIL_COLLECTION = process.env.NEXORA_MAIL_COLLECTION || 'mail';
@@ -29,70 +38,14 @@ const SUPER_ADMIN_EMAILS = new Set([
   'sainil.lalit278@gmail.com',
 ]);
 
-interface BuiltInPlanSpec {
-  planId: string;
-  productName: string;
-  imageUrl: string;
-  planPriceInr: number;
-  coinCost: number;
-  durationDays: number;
-  totalRewardEntitlement: number;
-  isActive: boolean;
-}
-
-const BUILT_IN_PLANS: Record<string, BuiltInPlanSpec> = {
-  PLAN_LAPTOP_100: {
-    planId: 'PLAN_LAPTOP_100',
-    productName: 'Laptop Plan',
-    imageUrl: '',
-    planPriceInr: 100,
-    coinCost: 100,
-    durationDays: 7,
-    totalRewardEntitlement: 188,
-    isActive: true,
-  },
-  PLAN_MACHINERY_500: {
-    planId: 'PLAN_MACHINERY_500',
-    productName: 'Machinery Plan',
-    imageUrl: '',
-    planPriceInr: 500,
-    coinCost: 500,
-    durationDays: 14,
-    totalRewardEntitlement: 650,
-    isActive: true,
-  },
-  PLAN_SERVER_1000: {
-    planId: 'PLAN_SERVER_1000',
-    productName: 'Compute Node Plan',
-    imageUrl: '',
-    planPriceInr: 1000,
-    coinCost: 1000,
-    durationDays: 21,
-    totalRewardEntitlement: 1320,
-    isActive: true,
-  },
-  PLAN_ENERGY_5000: {
-    planId: 'PLAN_ENERGY_5000',
-    productName: 'Grid Storage Plan',
-    imageUrl: '',
-    planPriceInr: 5000,
-    coinCost: 5000,
-    durationDays: 30,
-    totalRewardEntitlement: 6600,
-    isActive: true,
-  },
-};
+// Built-in catalog specs imported from ./investmentRequestValidation
 
 function makeId(prefix: string): string {
   return `${prefix}_${Date.now()}_${randomUUID().replace(/-/g, '').slice(0, 12)}`;
 }
 
 function sanitizeId(raw: unknown): string {
-  const val = String(raw || '').trim();
-  if (!val || val.length > 128 || !/^[a-zA-Z0-9_-]+$/.test(val)) {
-    return '';
-  }
-  return val;
+  return sanitizeIdentifier(raw);
 }
 
 function sha256Hex(raw: string): string {
@@ -392,36 +345,228 @@ export const setNexoraAdminRole = onCall(async (request) => {
   return { ok: true, targetUid, role: nextRole };
 });
 
-/**
- * Backend-verified plan investment activation.
- * Verifies user authentication, active account status, authoritative plan terms,
- * atomic idempotency lock (preventing duplicate investments), and sufficient verified
- * coin balance before debiting coinWallets and activating userPlans.
- */
-export const investInPlan = onCall(async (request) => {
-  if (!request.auth) {
-    throw new HttpsError('unauthenticated', 'Authentication is required to invest.');
+function assertAuthenticatedMember(request: {
+  auth?: { uid: string; token: Record<string, unknown> };
+}): string {
+  if (!request.auth || !request.auth.uid) {
+    throw new HttpsError(
+      'unauthenticated',
+      'Authentication is required to submit or process investment requests.'
+    );
+  }
+  const firebaseMeta = request.auth.token?.firebase as Record<string, unknown> | undefined;
+  if (firebaseMeta?.sign_in_provider === 'anonymous') {
+    throw new HttpsError(
+      'permission-denied',
+      'Anonymous sessions cannot submit or activate investments. Please sign in to a verified member account.'
+    );
+  }
+  return request.auth.uid;
+}
+
+function assertValidCallableInvestmentInput(data: unknown): {
+  planId: string;
+  idempotencyKey: string;
+  expectedPlanPriceInr?: unknown;
+  expectedCoinCost?: unknown;
+  paymentTxId: string;
+  depositId: string;
+} {
+  const tamperCheck = detectTamperedServerFields(data);
+  if (!tamperCheck.ok) {
+    throw new HttpsError('permission-denied', tamperCheck.message);
   }
 
-  const uid = request.auth.uid;
-  const planId = sanitizeId(request.data?.planId);
-  const requestId = sanitizeId(request.data?.requestId) || makeId('invreq');
-  const idempotencyKey = sanitizeId(request.data?.idempotencyKey) || `${uid}_${requestId}`;
-  const acceptedTerms = Boolean(request.data?.acceptedTerms);
-  const paymentTxId = sanitizeId(request.data?.paymentTxId);
-  const depositId = sanitizeId(request.data?.depositId);
+  const record = (data || {}) as Record<string, unknown>;
+  const planId = sanitizeId(record.planId);
+  const acceptedTerms = record.acceptedTerms === true;
+  const rawIdempotency = sanitizeId(record.idempotencyKey);
+  const idempotencyKey =
+    rawIdempotency && rawIdempotency.length >= 4
+      ? rawIdempotency.slice(0, 128)
+      : makeId('idem').slice(0, 128);
 
-  if (!planId) {
+  if (!planId || planId.length > 64) {
     throw new HttpsError('invalid-argument', 'A valid investment plan ID is required.');
   }
   if (!acceptedTerms) {
     throw new HttpsError(
       'invalid-argument',
-      'You must accept the Plan Terms and Conditions before investing.'
+      'You must accept the Plan Terms and Conditions before submitting an investment request.'
     );
   }
 
-  const lockId = sanitizeId(`inv_${uid}_${idempotencyKey}`).slice(0, 128);
+  return {
+    planId,
+    idempotencyKey,
+    expectedPlanPriceInr: record.expectedPlanPriceInr,
+    expectedCoinCost: record.expectedCoinCost,
+    paymentTxId: sanitizeId(record.paymentTxId),
+    depositId: sanitizeId(record.depositId),
+  };
+}
+
+async function createOrReusePendingRequestTx(params: {
+  uid: string;
+  planId: string;
+  idempotencyKey: string;
+  expectedPlanPriceInr?: unknown;
+  expectedCoinCost?: unknown;
+}): Promise<{
+  requestId: string;
+  investmentRequest: Record<string, unknown>;
+  deduplicated: boolean;
+}> {
+  const { uid, planId, idempotencyKey, expectedPlanPriceInr, expectedCoinCost } = params;
+  const requestId = makeId('invreq');
+  const reqLockId = buildDeterministicLockId('req', uid, idempotencyKey);
+  const activityLogId = makeId('ulog');
+
+  const userRef = db.collection('users').doc(uid);
+  const planRef = db.collection('productPlans').doc(planId);
+  const lockRef = db.collection('investmentRequestLocks').doc(reqLockId);
+  const invReqRef = db.collection('investmentRequests').doc(requestId);
+  const activityRef = db.collection('userActivityLogs').doc(activityLogId);
+
+  return db.runTransaction(async (tx) => {
+    const [userSnap, livePlanSnap, lockSnap] = await Promise.all([
+      tx.get(userRef),
+      tx.get(planRef),
+      tx.get(lockRef),
+    ]);
+
+    if (lockSnap.exists) {
+      const existingId = String(lockSnap.data()?.requestId || '');
+      if (existingId) {
+        const lockedReqSnap = await tx.get(db.collection('investmentRequests').doc(existingId));
+        if (lockedReqSnap.exists) {
+          const data = lockedReqSnap.data()!;
+          const createdIso = data.createdAt?.toDate
+            ? data.createdAt.toDate().toISOString()
+            : new Date().toISOString();
+          const updatedIso = data.updatedAt?.toDate
+            ? data.updatedAt.toDate().toISOString()
+            : createdIso;
+          return {
+            requestId: existingId,
+            investmentRequest: {
+              ...data,
+              createdAt: createdIso,
+              updatedAt: updatedIso,
+            },
+            deduplicated: true,
+          };
+        }
+      }
+      throw new HttpsError(
+        'already-exists',
+        'Duplicate investment request blocked by idempotency lock.'
+      );
+    }
+
+    if (!userSnap.exists) {
+      throw new HttpsError('failed-precondition', 'Verified member profile not found.');
+    }
+    const userData = userSnap.data()!;
+    const userId = String(userData.userId || '');
+    if (userData.status !== 'ACTIVE' || !/^NX[0-9]{6,10}$/.test(userId)) {
+      throw new HttpsError(
+        'permission-denied',
+        'Only active member accounts with a verified NX User ID can submit investment requests.'
+      );
+    }
+
+    const planResolution = resolveAuthoritativePlanSpec(
+      planId,
+      livePlanSnap.exists ? (livePlanSnap.data() as Record<string, unknown>) : null
+    );
+    if (!planResolution.ok) {
+      throw new HttpsError(planResolution.code, planResolution.message);
+    }
+    const authoritativePlan = planResolution.plan;
+
+    const amountCheck = validatePlanAmountsMatch({
+      plan: authoritativePlan,
+      expectedPlanPriceInr,
+      expectedCoinCost,
+    });
+    if (!amountCheck.ok) {
+      throw new HttpsError('invalid-argument', amountCheck.message);
+    }
+
+    const pendingDoc = buildPendingInvestmentRequestDoc({
+      requestId,
+      uid,
+      userId,
+      plan: authoritativePlan,
+      idempotencyKey,
+    });
+
+    const nowIso = new Date().toISOString();
+
+    tx.set(invReqRef, {
+      ...pendingDoc,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+
+    tx.set(lockRef, {
+      lockId: reqLockId,
+      uid,
+      userId,
+      requestId,
+      planId: authoritativePlan.planId,
+      idempotencyKey,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+
+    tx.set(activityRef, {
+      logId: activityLogId,
+      uid,
+      category: 'PLAN_CHANGE',
+      action: 'PLAN_INVESTMENT_REQUESTED',
+      details:
+        `Created investment request ${requestId} for ${authoritativePlan.productName} (${authoritativePlan.coinCost} Coins) [PENDING_VERIFICATION]`.slice(
+          0,
+          300
+        ),
+      createdAt: FieldValue.serverTimestamp(),
+    });
+
+    return {
+      requestId,
+      investmentRequest: {
+        ...pendingDoc,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      },
+      deduplicated: false,
+    };
+  });
+}
+
+async function executePlanActivationTransaction(params: {
+  uid: string;
+  planId: string;
+  requestId: string;
+  idempotencyKey: string;
+  paymentTxId?: string;
+  depositId?: string;
+  expectedPlanPriceInr?: unknown;
+  expectedCoinCost?: unknown;
+}) {
+  const {
+    uid,
+    planId,
+    requestId,
+    idempotencyKey,
+    paymentTxId,
+    depositId,
+    expectedPlanPriceInr,
+    expectedCoinCost,
+  } = params;
+
+  const lockId = buildDeterministicLockId('inv', uid, idempotencyKey);
   const userPlanId = makeId('uplan');
   const coinTxId = `ptx_${userPlanId}`;
   const activityLogId = makeId('ulog');
@@ -488,6 +633,7 @@ export const investInPlan = onCall(async (request) => {
           coinTransactionId: String(locked.coinTransactionId || ''),
           newAvailableCoins: Number(walletSnap.data()?.availableCoins || 0),
           requestId: String(locked.requestId || requestId),
+          status: 'ACTIVATED' as const,
           deduplicated: true,
         };
       }
@@ -502,8 +648,17 @@ export const investInPlan = onCall(async (request) => {
       if (reqData.uid !== uid) {
         throw new HttpsError('permission-denied', 'Investment request ownership mismatch.');
       }
+      if (reqData.planId && String(reqData.planId) !== planId) {
+        throw new HttpsError('invalid-argument', 'Investment request plan mismatch.');
+      }
       if (reqData.status === 'ACTIVATED') {
         throw new HttpsError('already-exists', 'This investment request is already activated.');
+      }
+      if (reqData.status === 'REJECTED' || reqData.status === 'FAILED') {
+        throw new HttpsError(
+          'failed-precondition',
+          `Investment request ${requestId} is in terminal status ${String(reqData.status)} and cannot be processed.`
+        );
       }
     }
 
@@ -533,31 +688,23 @@ export const investInPlan = onCall(async (request) => {
       }
     }
 
-    // Resolve authoritative plan terms
-    let planSpec: BuiltInPlanSpec;
-    if (livePlanSnap.exists) {
-      const pd = livePlanSnap.data()!;
-      planSpec = {
-        planId: String(pd.planId || planId),
-        productName: String(pd.productName || 'Structured Plan'),
-        imageUrl: String(pd.imageUrl || ''),
-        planPriceInr: Math.max(1, Math.round(Number(pd.planPriceInr || 0))),
-        coinCost: Math.max(1, Math.round(Number(pd.coinDeductionAmount || 0))),
-        durationDays: Math.max(1, Math.round(Number(pd.durationDays || 1))),
-        totalRewardEntitlement: Math.max(0, Math.round(Number(pd.totalCoinReward || 0))),
-        isActive: Boolean(pd.isActive),
-      };
-    } else if (BUILT_IN_PLANS[planId]) {
-      planSpec = BUILT_IN_PLANS[planId];
-    } else {
-      throw new HttpsError('not-found', 'Selected investment plan was not found.');
+    // Resolve authoritative plan terms strictly on the server
+    const planResolution = resolveAuthoritativePlanSpec(
+      planId,
+      livePlanSnap.exists ? (livePlanSnap.data() as Record<string, unknown>) : null
+    );
+    if (!planResolution.ok) {
+      throw new HttpsError(planResolution.code, planResolution.message);
     }
+    const planSpec: BuiltInPlanSpec = planResolution.plan;
 
-    if (!planSpec.isActive) {
-      throw new HttpsError(
-        'failed-precondition',
-        'This investment plan is currently paused by administration.'
-      );
+    const amountCheck = validatePlanAmountsMatch({
+      plan: planSpec,
+      expectedPlanPriceInr,
+      expectedCoinCost,
+    });
+    if (!amountCheck.ok) {
+      throw new HttpsError('invalid-argument', amountCheck.message);
     }
 
     if (!walletSnap.exists) {
@@ -577,6 +724,21 @@ export const investInPlan = onCall(async (request) => {
           status: 'FAILED',
           paymentStatus: 'INSUFFICIENT_BALANCE',
           failureReason: failReason.slice(0, 300),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      } else {
+        tx.set(invReqRef, {
+          ...buildPendingInvestmentRequestDoc({
+            requestId,
+            uid,
+            userId,
+            plan: planSpec,
+            idempotencyKey,
+          }),
+          status: 'FAILED',
+          paymentStatus: 'INSUFFICIENT_BALANCE',
+          failureReason: failReason.slice(0, 300),
+          createdAt: FieldValue.serverTimestamp(),
           updatedAt: FieldValue.serverTimestamp(),
         });
       }
@@ -707,6 +869,7 @@ export const investInPlan = onCall(async (request) => {
       coinTransactionId: coinTxId,
       newAvailableCoins: nextAvailable,
       requestId,
+      status: 'ACTIVATED' as const,
       deduplicated: false,
     };
   });
@@ -716,6 +879,92 @@ export const investInPlan = onCall(async (request) => {
   }
 
   return txResult;
+}
+
+/**
+ * Unified server-governed investment request validation & processing endpoint.
+ * Rejects any client-supplied financial/status overrides, creates/reuses an idempotent
+ * server-controlled PENDING_VERIFICATION request, verifies active NX account & wallet
+ * balance, atomically debits coins, activates userPlans, transitions investmentRequests
+ * to ACTIVATED (triggering email notification), and returns the authoritative record.
+ */
+export const processInvestmentRequest = onCall(async (request) => {
+  const uid = assertAuthenticatedMember(request);
+  const input = assertValidCallableInvestmentInput(request.data);
+  const existingRequestId = sanitizeId((request.data as Record<string, unknown>)?.requestId);
+
+  let requestId = existingRequestId;
+  if (requestId) {
+    const existingSnap = await db.collection('investmentRequests').doc(requestId).get();
+    if (!existingSnap.exists) {
+      throw new HttpsError('not-found', 'Referenced investment request was not found.');
+    }
+    if (existingSnap.data()?.uid !== uid) {
+      throw new HttpsError('permission-denied', 'Investment request ownership mismatch.');
+    }
+  } else {
+    const created = await createOrReusePendingRequestTx({
+      uid,
+      planId: input.planId,
+      idempotencyKey: input.idempotencyKey,
+      expectedPlanPriceInr: input.expectedPlanPriceInr,
+      expectedCoinCost: input.expectedCoinCost,
+    });
+    requestId = created.requestId;
+  }
+
+  return executePlanActivationTransaction({
+    uid,
+    planId: input.planId,
+    requestId,
+    idempotencyKey: input.idempotencyKey,
+    paymentTxId: input.paymentTxId,
+    depositId: input.depositId,
+    expectedPlanPriceInr: input.expectedPlanPriceInr,
+    expectedCoinCost: input.expectedCoinCost,
+  });
+});
+
+/**
+ * Server-governed investment request creation.
+ * Rejects tampered financial fields, verifies Firebase Auth UID and active NX member profile,
+ * resolves authoritative plan specs & pricing, enforces idempotency locks, and creates
+ * `investmentRequests/{requestId}` strictly in PENDING_VERIFICATION / PENDING.
+ */
+export const createInvestmentRequest = onCall(async (request) => {
+  const uid = assertAuthenticatedMember(request);
+  const input = assertValidCallableInvestmentInput(request.data);
+
+  return createOrReusePendingRequestTx({
+    uid,
+    planId: input.planId,
+    idempotencyKey: input.idempotencyKey,
+    expectedPlanPriceInr: input.expectedPlanPriceInr,
+    expectedCoinCost: input.expectedCoinCost,
+  });
+});
+
+/**
+ * Backend-verified plan investment activation.
+ * Verifies user authentication, active account status, authoritative plan terms,
+ * atomic idempotency lock (preventing duplicate investments), and sufficient verified
+ * coin balance before debiting coinWallets and activating userPlans.
+ */
+export const investInPlan = onCall(async (request) => {
+  const uid = assertAuthenticatedMember(request);
+  const input = assertValidCallableInvestmentInput(request.data);
+  const requestId = sanitizeId((request.data as Record<string, unknown>)?.requestId) || makeId('invreq');
+
+  return executePlanActivationTransaction({
+    uid,
+    planId: input.planId,
+    requestId,
+    idempotencyKey: input.idempotencyKey,
+    paymentTxId: input.paymentTxId,
+    depositId: input.depositId,
+    expectedPlanPriceInr: input.expectedPlanPriceInr,
+    expectedCoinCost: input.expectedCoinCost,
+  });
 });
 
 /**

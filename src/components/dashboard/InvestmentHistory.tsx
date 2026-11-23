@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { ROUTES } from '../../config/constants';
 import { subscribeUserDeposits } from '../../services/depositService';
+import { subscribeUserInvestmentRequests } from '../../services/planService';
 import {
   subscribeUserPlans,
   subscribeUserTransactions,
@@ -25,6 +26,7 @@ import { subscribeUserWithdrawals } from '../../services/walletService';
 import {
   CoinTransaction,
   DepositRequest,
+  InvestmentRequest,
   UserPlan,
   WithdrawalRequest,
 } from '../../types/domain';
@@ -100,11 +102,13 @@ export function InvestmentHistory({
   highContrast = false,
 }: InvestmentHistoryProps) {
   const [plans, setPlans] = useState<UserPlan[]>([]);
+  const [investmentRequests, setInvestmentRequests] = useState<InvestmentRequest[]>([]);
   const [transactions, setTransactions] = useState<CoinTransaction[]>([]);
   const [deposits, setDeposits] = useState<DepositRequest[]>([]);
   const [withdrawals, setWithdrawals] = useState<WithdrawalRequest[]>([]);
 
   const [plansLoaded, setPlansLoaded] = useState(false);
+  const [requestsLoaded, setRequestsLoaded] = useState(false);
   const [txLoaded, setTxLoaded] = useState(false);
   const [depositsLoaded, setDepositsLoaded] = useState(false);
   const [withdrawalsLoaded, setWithdrawalsLoaded] = useState(false);
@@ -121,6 +125,7 @@ export function InvestmentHistory({
   useEffect(() => {
     if (!uid) return;
     setPlansLoaded(false);
+    setRequestsLoaded(false);
     setTxLoaded(false);
     setDepositsLoaded(false);
     setWithdrawalsLoaded(false);
@@ -135,6 +140,18 @@ export function InvestmentHistory({
       (msg) => {
         setLoadError((prev) => prev || msg);
         setPlansLoaded(true);
+      }
+    );
+
+    const unsubRequests = subscribeUserInvestmentRequests(
+      uid,
+      (items) => {
+        setInvestmentRequests(items);
+        setRequestsLoaded(true);
+      },
+      (msg) => {
+        setLoadError((prev) => prev || msg);
+        setRequestsLoaded(true);
       }
     );
 
@@ -176,23 +193,31 @@ export function InvestmentHistory({
 
     return () => {
       unsubPlans();
+      unsubRequests();
       unsubTx();
       unsubDeposits();
       unsubWithdrawals();
     };
   }, [uid, retryCounter]);
 
-  const loading = !(plansLoaded && txLoaded && depositsLoaded && withdrawalsLoaded);
+  const loading = !(
+    plansLoaded &&
+    requestsLoaded &&
+    txLoaded &&
+    depositsLoaded &&
+    withdrawalsLoaded
+  );
 
   const allEntries = useMemo(
     () =>
       buildInvestmentHistoryEntries({
         plans,
+        investmentRequests,
         transactions,
         deposits,
         withdrawals,
       }),
-    [plans, transactions, deposits, withdrawals]
+    [plans, investmentRequests, transactions, deposits, withdrawals]
   );
 
   const summary = useMemo(
