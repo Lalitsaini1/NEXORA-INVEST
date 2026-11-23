@@ -33,12 +33,16 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.adminReviewWithdrawalFn = exports.adminVerifyDepositAndCredit = exports.submitWalletWithdrawalFn = exports.investInPlan = exports.setNexoraAdminRole = exports.provisionNexoraProfile = void 0;
+exports.notifyUserOnInvestmentRequestActivated = exports.notifyUserOnUserPlanActivated = exports.adminReviewWithdrawalFn = exports.adminVerifyDepositAndCredit = exports.submitWalletWithdrawalFn = exports.investInPlan = exports.setNexoraAdminRole = exports.provisionNexoraProfile = void 0;
 const node_crypto_1 = require("node:crypto");
 const admin = __importStar(require("firebase-admin"));
 const firestore_1 = require("firebase-admin/firestore");
+const v2_1 = require("firebase-functions/v2");
+const firestore_2 = require("firebase-functions/v2/firestore");
 const https_1 = require("firebase-functions/v2/https");
+const planActivationEmail_1 = require("./planActivationEmail");
 const PROJECT_ID = process.env.GCLOUD_PROJECT || 'gen-lang-client-0957030568';
+const MAIL_COLLECTION = process.env.NEXORA_MAIL_COLLECTION || 'mail';
 const DATABASE_ID = process.env.NEXORA_FIRESTORE_DB_ID ||
     'ai-studio-nexorainvest-5bfd69ce-b6b9-406b-b8b5-777b72b7226f';
 if (!admin.apps.length) {
@@ -1004,5 +1008,152 @@ exports.adminReviewWithdrawalFn = (0, https_1.onCall)(async (request) => {
         createdAt: firestore_1.FieldValue.serverTimestamp(),
     });
     return { ok: true, withdrawalId, nextStatus };
+});
+async function enqueueActivationEmailIfTransitioned(params) {
+    if (!params.beforeData || !params.afterData) {
+        return;
+    }
+    if (!(0, planActivationEmail_1.isPendingToActiveTransition)(params.beforeData.status, params.afterData.status)) {
+        return;
+    }
+    const uid = String(params.afterData.uid || '').trim();
+    if (!uid) {
+        v2_1.logger.warn('Skipping activation email: missing uid on investment document.', {
+            sourceCollection: params.sourceCollection,
+            docId: params.docId,
+        });
+        return;
+    }
+    const userSnap = await db.collection('users').doc(uid).get();
+    const userData = userSnap.exists ? userSnap.data() : undefined;
+    let recipientEmail = (0, planActivationEmail_1.isValidEmailAddress)(userData?.email) ? userData.email.trim() : '';
+    let fullName = typeof userData?.fullName === 'string' ? userData.fullName : '';
+    const userId = String(userData?.userId || params.afterData.userId || '').trim();
+    if (!recipientEmail) {
+        try {
+            const authRecord = await admin.auth().getUser(uid);
+            if ((0, planActivationEmail_1.isValidEmailAddress)(authRecord.email)) {
+                recipientEmail = authRecord.email.trim();
+            }
+            if (!fullName && authRecord.displayName) {
+                fullName = authRecord.displayName;
+            }
+        }
+        catch (authErr) {
+            v2_1.logger.warn('Unable to look up Firebase Auth user for activation email.', {
+                uid,
+                error: String(authErr),
+            });
+        }
+    }
+    if (!(0, planActivationEmail_1.isValidEmailAddress)(recipientEmail)) {
+        v2_1.logger.info('No verified email on profile; skipping Trigger Email notification.', {
+            uid,
+            sourceCollection: params.sourceCollection,
+            docId: params.docId,
+        });
+        return;
+    }
+    const referenceId = String(params.afterData.activatedUserPlanId || params.afterData.userPlanId || params.docId).trim();
+    const planId = String(params.afterData.planId || '').trim();
+    const productName = String(params.afterData.productName || 'Structured Plan').trim();
+    const mailDocId = (0, planActivationEmail_1.buildMailDocumentId)(params.afterData, params.docId);
+    const emailDoc = (0, planActivationEmail_1.buildPlanActivationEmailPayload)({
+        toEmail: recipientEmail,
+        fullName,
+        userId,
+        productName,
+        planId,
+        referenceId,
+        coinCost: Number(params.afterData.coinCost || 0),
+        durationDays: Number(params.afterData.durationDays || 0),
+        totalRewardEntitlement: Number(params.afterData.totalRewardEntitlement || 0),
+        startDate: typeof params.afterData.startDate === 'string' ? params.afterData.startDate : undefined,
+        endDate: typeof params.afterData.endDate === 'string' ? params.afterData.endDate : undefined,
+    });
+    try {
+        await db
+            .collection(MAIL_COLLECTION)
+            .doc(mailDocId)
+            .create({
+            ...emailDoc,
+            uid,
+            userId,
+            planId,
+            referenceId,
+            sourceCollection: params.sourceCollection,
+            createdAt: firestore_1.FieldValue.serverTimestamp(),
+        });
+        v2_1.logger.info('Queued plan activation email for Firebase Trigger Email extension.', {
+            uid,
+            mailDocId,
+            mailCollection: MAIL_COLLECTION,
+            sourceCollection: params.sourceCollection,
+            referenceId,
+        });
+    }
+    catch (err) {
+        const code = typeof err === 'object' && err !== null && 'code' in err
+            ? err.code
+            : undefined;
+        // Firestore ALREADY_EXISTS (6): notification was already queued for this plan activation
+        if (code === 6 || code === 'already-exists') {
+            v2_1.logger.info('Activation email already queued; skipping duplicate delivery.', {
+                mailDocId,
+                referenceId,
+            });
+            return;
+        }
+        throw err;
+    }
+    const logId = makeId('ulog');
+    await db
+        .collection('userActivityLogs')
+        .doc(logId)
+        .set({
+        logId,
+        uid,
+        category: 'PLAN_CHANGE',
+        action: 'PLAN_ACTIVATION_EMAIL_QUEUED',
+        details: `Queued activation notification email for ${productName} (${referenceId}) -> ${mailDocId}`.slice(0, 300),
+        createdAt: firestore_1.FieldValue.serverTimestamp(),
+    })
+        .catch(() => undefined);
+}
+/**
+ * Automated Firebase Extension ("Trigger Email from Firestore") dispatcher.
+ * Fires whenever a `userPlans/{userPlanId}` document transitions from
+ * 'pending' / 'PENDING' / 'PENDING_VERIFICATION' to 'active' / 'ACTIVE' / 'ACTIVATED'.
+ */
+exports.notifyUserOnUserPlanActivated = (0, firestore_2.onDocumentUpdated)({
+    document: 'userPlans/{userPlanId}',
+    database: DATABASE_ID,
+}, async (event) => {
+    if (!event.data)
+        return;
+    await enqueueActivationEmailIfTransitioned({
+        sourceCollection: 'userPlans',
+        docId: event.params.userPlanId,
+        beforeData: event.data.before.data(),
+        afterData: event.data.after.data(),
+    });
+});
+/**
+ * Automated Firebase Extension ("Trigger Email from Firestore") dispatcher.
+ * Fires whenever an `investmentRequests/{requestId}` document transitions from
+ * 'PENDING_VERIFICATION' / 'pending' to 'ACTIVATED' / 'active'.
+ */
+exports.notifyUserOnInvestmentRequestActivated = (0, firestore_2.onDocumentUpdated)({
+    document: 'investmentRequests/{requestId}',
+    database: DATABASE_ID,
+}, async (event) => {
+    if (!event.data)
+        return;
+    await enqueueActivationEmailIfTransitioned({
+        sourceCollection: 'investmentRequests',
+        docId: event.params.requestId,
+        beforeData: event.data.before.data(),
+        afterData: event.data.after.data(),
+    });
 });
 //# sourceMappingURL=index.js.map

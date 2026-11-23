@@ -1488,5 +1488,12 @@ service cloud.firestore {
         incoming().timestamp == request.time;
       allow update, delete: if false;
     }
+
+    // Firebase Extensions ("Trigger Email from Firestore") Outbound Mail Queue
+    // Strictly written by backend Cloud Functions & processed by the Firebase Extension via Admin SDK.
+    match /mail/{mailId} {
+      allow get, list: if isAdmin();
+      allow create, update, delete: if false;
+    }
   }
 }

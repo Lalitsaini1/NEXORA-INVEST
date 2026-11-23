@@ -850,6 +850,33 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "MailQueueDocument": {
+      "title": "MailQueueDocument",
+      "description": "Outbound email document written exclusively by backend Cloud Functions for processing by Firebase Extension (firestore-send-email).",
+      "type": "object",
+      "properties": {
+        "to": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "message": {
+          "type": "object",
+          "properties": {
+            "subject": { "type": "string", "maxLength": 240 },
+            "text": { "type": "string" },
+            "html": { "type": "string" }
+          },
+          "required": ["subject", "text", "html"]
+        },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 16 },
+        "planId": { "type": "string", "maxLength": 64 },
+        "referenceId": { "type": "string", "maxLength": 128 },
+        "sourceCollection": { "type": "string", "enum": ["userPlans", "investmentRequests"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["to", "message", "uid", "referenceId", "createdAt"]
     }
   },
   "firestore": {
@@ -948,6 +975,10 @@
     "/adminLoginAttempts/{attemptId}": {
       "schema": { "$ref": "#/entities/AdminLoginAttempt" },
       "description": "Immutable log of Admin Portal authentication attempts and denied escalation events."
+    },
+    "/mail/{mailId}": {
+      "schema": { "$ref": "#/entities/MailQueueDocument" },
+      "description": "Backend-only outbound email queue processed by the Firebase Trigger Email from Firestore extension."
     }
   }
 }

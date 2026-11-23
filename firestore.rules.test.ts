@@ -170,6 +170,14 @@ test('firestore.rules enforces default-deny, zero-plaintext password, and strict
     rules,
     /match \/depositRequests\/\{depositId\}[\s\S]*allow get: if isSignedIn\(\) && isValidId\(depositId\) && \(resource == null \|\| existing\(\)\.uid == request\.auth\.uid \|\| isAdmin\(\)\);/
   );
+
+  // 22. Firebase Trigger Email extension mail queue: strictly server-only writes, admin-only audit reads
+  assert.ok('MailQueueDocument' in blueprint.entities);
+  assert.ok('/mail/{mailId}' in blueprint.firestore);
+  assert.match(
+    rules,
+    /match \/mail\/\{mailId\}[\s\S]*allow get, list: if isAdmin\(\);[\s\S]*allow create, update, delete: if false;/
+  );
 });
 
 
