@@ -1210,7 +1210,7 @@ export const adminVerifyDepositAndCredit = onCall(async (request) => {
         }
       : null;
 
-  const { paymentTxId, creditLockId, coinTxId, idempotencyKey } =
+  const { paymentTxId, creditLockId, idempotencyKey } =
     buildCanonicalDepositTxIds(depositId);
 
   const depositRef = db.collection('depositRequests').doc(depositId);
