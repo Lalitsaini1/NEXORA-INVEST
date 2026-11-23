@@ -11,8 +11,8 @@ import {
   Smartphone,
 } from 'lucide-react';
 import { LoadingScreen } from '../../components/common/LoadingScreen';
-import { CoinBalanceGrowthChart } from '../../components/dashboard/CoinBalanceGrowthChart';
 import { DailyRewardBreakdown } from '../../components/dashboard/DailyRewardBreakdown';
+import { FinancialInsightsCharts } from '../../components/dashboard/FinancialInsightsCharts';
 import { InvestmentHistory } from '../../components/dashboard/InvestmentHistory';
 import { MarketNewsTicker } from '../../components/dashboard/MarketNewsTicker';
 import { MemberActivityLog } from '../../components/dashboard/MemberActivityLog';
@@ -324,6 +324,13 @@ export function MemberDashboardPage() {
           highContrast={isHighContrast}
         />
 
+        {/* Visual Investment Growth & Transaction Cashflow Analytics (Recharts) */}
+        <FinancialInsightsCharts
+          uid={firebaseUser.uid}
+          availableCoins={wallet?.availableCoins ?? 0}
+          highContrast={isHighContrast}
+        />
+
         {/* Investment History (Live Firestore past plans, deposits, rewards, and payouts) */}
         <InvestmentHistory uid={firebaseUser.uid} highContrast={isHighContrast} />
 
@@ -437,12 +444,6 @@ export function MemberDashboardPage() {
           uid={firebaseUser.uid}
           userId={profile?.userId}
           highContrast={isHighContrast}
-        />
-
-        {/* 30-Day Coin Balance Growth Line Chart */}
-        <CoinBalanceGrowthChart
-          uid={firebaseUser.uid}
-          currentCoins={wallet?.availableCoins ?? 0}
         />
 
         {/* Daily Reward Earnings Breakdown */}

@@ -8,12 +8,23 @@ import {
   TrendingUp,
 } from 'lucide-react';
 import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
+import {
   subscribeUserDailyRewards,
   subscribeUserPlans,
   subscribeUserTransactions,
 } from '../../services/transactionService';
 import { CoinTransaction, DailyRewardRecord, UserPlan } from '../../types/domain';
 import {
+  DailyRewardChartBucket,
   aggregateDailyRewardEarnings,
   computePlanProgressItems,
   formatCoins,
@@ -29,6 +40,28 @@ const WINDOW_OPTIONS: { value: 7 | 14 | 30; label: string }[] = [
   { value: 14, label: '14D' },
   { value: 30, label: '30D' },
 ];
+
+function DailyRewardTooltip({
+  active,
+  payload,
+}: {
+  active?: boolean;
+  payload?: Array<{ payload: DailyRewardChartBucket }>;
+}) {
+  if (!active || !payload || payload.length === 0) return null;
+  const bucket = payload[0].payload;
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg shadow-md px-3.5 py-2.5 text-xs space-y-1">
+      <p className="font-semibold text-[#0B1A30]">{bucket.fullLabel}</p>
+      <p className="font-mono tabular-nums text-[#0B1A30]">
+        Credited: <strong>{formatCoins(bucket.coins)}</strong>
+      </p>
+      <p className="font-mono tabular-nums text-slate-500">
+        {bucket.creditCount} {bucket.creditCount === 1 ? 'credit' : 'credits'}
+      </p>
+    </div>
+  );
+}
 
 export function DailyRewardBreakdown({
   uid,
@@ -243,7 +276,7 @@ export function DailyRewardBreakdown({
             </div>
           </div>
 
-          {/* Daily Vertical Bar Chart */}
+          {/* Daily Recharts Vertical Bar Chart */}
           <div className="space-y-3">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
               <span className="font-semibold text-slate-700">
@@ -273,54 +306,59 @@ export function DailyRewardBreakdown({
                 </p>
               </div>
             ) : (
-              <div className="p-4 bg-slate-50/70 border border-slate-200 rounded-lg space-y-2">
+              <div className="p-4 bg-slate-50/70 border border-slate-200 rounded-lg">
                 <div
-                  className="h-40 flex items-end gap-1 sm:gap-1.5 pt-4 border-b border-slate-300"
-                  role="img"
+                  className="w-full h-[210px]"
+                  role="region"
                   aria-label={`Bar chart of daily coin reward credits over the last ${windowDays} days`}
                 >
-                  {aggregation.buckets.map((bucket) => {
-                    const heightPct =
-                      aggregation.maxDailyCoins > 0
-                        ? Math.round((bucket.coins / aggregation.maxDailyCoins) * 100)
-                        : 0;
-                    const barHeight = bucket.coins > 0 ? Math.max(8, heightPct) : 2;
-                    const isSelected = selectedBucket?.dateKey === bucket.dateKey;
-
-                    return (
-                      <button
-                        key={bucket.dateKey}
-                        type="button"
-                        onClick={() => setSelectedDayKey(bucket.dateKey)}
-                        onMouseEnter={() => setSelectedDayKey(bucket.dateKey)}
-                        title={`${bucket.fullLabel}: ${formatCoins(bucket.coins)}`}
-                        aria-label={`${bucket.fullLabel}: ${formatCoins(bucket.coins)}`}
-                        className="flex-1 h-full flex flex-col justify-end items-center group cursor-pointer focus:outline-none"
-                      >
-                        <div
-                          style={{ height: `${barHeight}%` }}
-                          className={`w-full max-w-[26px] rounded-t transition-colors ${
-                            bucket.coins === 0
-                              ? 'bg-slate-200'
-                              : isSelected
-                              ? 'bg-[#C59B3B]'
-                              : 'bg-[#0B1A30] group-hover:bg-[#1D3A68]'
-                          }`}
-                        />
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {/* X-Axis Start / Mid / End Labels */}
-                <div className="flex items-center justify-between text-[11px] font-mono text-slate-500 tabular-nums">
-                  <span>{aggregation.buckets[0]?.shortLabel}</span>
-                  <span>
-                    {aggregation.buckets[Math.floor(aggregation.buckets.length / 2)]?.shortLabel}
-                  </span>
-                  <span>
-                    {aggregation.buckets[aggregation.buckets.length - 1]?.shortLabel}
-                  </span>
+                  <ResponsiveContainer width="100%" height={210}>
+                    <BarChart
+                      data={aggregation.buckets}
+                      margin={{ top: 10, right: 12, left: 0, bottom: 2 }}
+                      onClick={(state) => {
+                        const label = state?.activeLabel;
+                        if (typeof label === 'string') {
+                          const match = aggregation.buckets.find((b) => b.shortLabel === label);
+                          if (match) setSelectedDayKey(match.dateKey);
+                        }
+                      }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" vertical={false} />
+                      <XAxis
+                        dataKey="shortLabel"
+                        tick={{ fontSize: 11, fill: '#64748B' }}
+                        tickLine={false}
+                        axisLine={{ stroke: '#CBD5E1' }}
+                        minTickGap={16}
+                      />
+                      <YAxis
+                        tick={{ fontSize: 11, fill: '#64748B' }}
+                        tickLine={false}
+                        axisLine={false}
+                        width={44}
+                        allowDecimals={false}
+                      />
+                      <Tooltip content={<DailyRewardTooltip />} />
+                      <Bar dataKey="coins" radius={[4, 4, 0, 0]} maxBarSize={28}>
+                        {aggregation.buckets.map((bucket) => {
+                          const isSelected = selectedBucket?.dateKey === bucket.dateKey;
+                          return (
+                            <Cell
+                              key={bucket.dateKey}
+                              fill={
+                                bucket.coins === 0
+                                  ? '#CBD5E1'
+                                  : isSelected
+                                  ? '#C59B3B'
+                                  : '#0B1A30'
+                              }
+                            />
+                          );
+                        })}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
                 </div>
               </div>
             )}
