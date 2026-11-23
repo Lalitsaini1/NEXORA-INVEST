@@ -168,6 +168,12 @@
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
+        "lastPlanRef": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
         "updatedAt": {
           "type": "string",
           "format": "date-time"
@@ -313,11 +319,12 @@
       "description": "User enrollment in a structured product-based virtual coin cycle.",
       "type": "object",
       "properties": {
-        "userPlanId": { "type": "string", "minLength": 1, "maxLength": 128 },
-        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "userPlanId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "userId": { "type": "string", "minLength": 8, "maxLength": 16, "pattern": "^NX[0-9]{6,10}$" },
-        "planId": { "type": "string", "minLength": 1, "maxLength": 64 },
-        "productName": { "type": "string", "maxLength": 120 },
+        "planId": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "productName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "imageUrl": { "type": "string", "maxLength": 500 },
         "coinCost": { "type": "integer" },
         "durationDays": { "type": "integer" },
         "totalRewardEntitlement": { "type": "integer" },
@@ -325,6 +332,9 @@
         "remainingReward": { "type": "integer" },
         "daysCompleted": { "type": "integer" },
         "remainingDays": { "type": "integer" },
+        "startDate": { "type": "string", "maxLength": 64 },
+        "endDate": { "type": "string", "maxLength": 64 },
+        "nextRewardEligibilityTime": { "type": "string", "maxLength": 64 },
         "status": { "type": "string", "enum": ["ACTIVE", "COMPLETED", "CANCELLED"] },
         "createdAt": { "type": "string", "format": "date-time" }
       },
@@ -334,6 +344,7 @@
         "userId",
         "planId",
         "productName",
+        "imageUrl",
         "coinCost",
         "durationDays",
         "totalRewardEntitlement",
@@ -341,6 +352,9 @@
         "remainingReward",
         "daysCompleted",
         "remainingDays",
+        "startDate",
+        "endDate",
+        "nextRewardEligibilityTime",
         "status",
         "createdAt"
       ]

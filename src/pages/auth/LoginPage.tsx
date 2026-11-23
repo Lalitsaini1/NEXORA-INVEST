@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { Eye, EyeOff, KeyRound, Loader2, Smartphone } from 'lucide-react';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import { ArrowRight, Eye, EyeOff, KeyRound, Loader2, Smartphone } from 'lucide-react';
 import { AuthShell } from '../../components/auth/AuthShell';
 import { ROUTES } from '../../config/constants';
 import { useAuth } from '../../context/AuthContext';
+import { ILLUSTRATIVE_PLANS } from '../../data/catalogPreview';
 import { usePhoneOtp } from '../../hooks/usePhoneOtp';
 import {
   loginWithEmailPassword,
@@ -11,6 +12,14 @@ import {
   mapFirebaseError,
   sendPhoneOtp,
 } from '../../services/authService';
+import {
+  buildAuthUrlWithPlan,
+  extractSelectedPlanId,
+  loadPendingPlanId,
+  REDIRECT_QUERY_PARAM,
+  resolvePostAuthDestination,
+  savePendingPlanId,
+} from '../../utils/planNavigation';
 import {
   validateEmail,
   validateIndianMobile,
@@ -21,6 +30,8 @@ type LoginMethod = 'email' | 'otp';
 
 export function LoginPage() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const [searchParams] = useSearchParams();
   const {
     firebaseUser,
     profile,
@@ -29,6 +40,34 @@ export function LoginPage() {
     profileInitError,
     retryProfileInit,
   } = useAuth();
+
+  const selectedPlanId = extractSelectedPlanId({
+    searchParams,
+    locationState: location.state,
+    useStorageFallback: true,
+  });
+  const redirectQuery = searchParams.get(REDIRECT_QUERY_PARAM);
+  const selectedPlanPreview = selectedPlanId
+    ? ILLUSTRATIVE_PLANS.find((p) => p.planId === selectedPlanId)
+    : undefined;
+
+  useEffect(() => {
+    if (selectedPlanId) {
+      savePendingPlanId(selectedPlanId);
+    }
+  }, [selectedPlanId]);
+
+  const destination = resolvePostAuthDestination({
+    searchParams,
+    locationState: location.state,
+    storedPlanId: selectedPlanId || loadPendingPlanId(),
+    defaultRoute: ROUTES.USER_DASHBOARD,
+  });
+
+  const registerUrl = buildAuthUrlWithPlan(ROUTES.REGISTER, {
+    planId: selectedPlanId,
+    redirectPath: redirectQuery,
+  });
 
   const [method, setMethod] = useState<LoginMethod>('email');
 
@@ -56,9 +95,9 @@ export function LoginPage() {
 
   useEffect(() => {
     if (authReady && firebaseUser && profile) {
-      navigate(ROUTES.USER_DASHBOARD, { replace: true });
+      navigate(destination, { replace: true });
     }
-  }, [authReady, firebaseUser, profile, navigate]);
+  }, [authReady, firebaseUser, profile, destination, navigate]);
 
   const handleEmailSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -73,7 +112,7 @@ export function LoginPage() {
     setSubmitting(true);
     try {
       await loginWithEmailPassword(email, password);
-      navigate(ROUTES.USER_DASHBOARD, { replace: true });
+      navigate(destination, { replace: true });
     } catch (err) {
       setError(mapFirebaseError(err));
     } finally {
@@ -117,7 +156,7 @@ export function LoginPage() {
     try {
       await loginWithPhoneOtp(confirmationResult, otpCode);
       resetOtpFlow();
-      navigate(ROUTES.USER_DASHBOARD, { replace: true });
+      navigate(destination, { replace: true });
     } catch (err) {
       setError(mapFirebaseError(err));
     } finally {
@@ -130,6 +169,19 @@ export function LoginPage() {
       title="Sign in to your account"
       subtitle="Access your virtual coin wallet, active plans, and reward history."
     >
+      {selectedPlanId && (
+        <div className="p-3 bg-[#F8F1DE] border border-[#C59B3B]/50 rounded-lg flex items-center justify-between gap-2 text-xs text-[#0B1A30]">
+          <div>
+            <span className="font-semibold">Selected Plan:</span>{' '}
+            <span>{selectedPlanPreview?.productName || selectedPlanId}</span>
+          </div>
+          <span className="inline-flex items-center gap-1 font-semibold text-[#8A6518] shrink-0">
+            <span>Resumes after sign in</span>
+            <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+          </span>
+        </div>
+      )}
+
       {/* Method Switcher */}
       <div
         role="tablist"
@@ -340,7 +392,7 @@ export function LoginPage() {
       <div className="pt-4 border-t border-slate-200 flex items-center justify-between text-xs text-slate-600">
         <span>
           New member?{' '}
-          <Link to={ROUTES.REGISTER} className="font-semibold text-[#0B1A30] hover:text-[#A37B22]">
+          <Link to={registerUrl} className="font-semibold text-[#0B1A30] hover:text-[#A37B22]">
             Create account
           </Link>
         </span>

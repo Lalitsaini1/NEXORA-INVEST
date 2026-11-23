@@ -133,6 +133,7 @@ service cloud.firestore {
           'pendingTransactionCoins',
           'withdrawableBalanceInr',
           'lastWithdrawalRef',
+          'lastPlanRef',
           'updatedAt'
         ]) &&
         isValidId(data.uid) &&
@@ -144,6 +145,7 @@ service cloud.firestore {
         data.pendingTransactionCoins is int && data.pendingTransactionCoins >= 0 &&
         data.withdrawableBalanceInr is int && data.withdrawableBalanceInr >= 0 &&
         (!('lastWithdrawalRef' in data) || isValidId(data.lastWithdrawalRef)) &&
+        (!('lastPlanRef' in data) || isValidId(data.lastPlanRef)) &&
         data.updatedAt is timestamp;
     }
 
@@ -203,6 +205,86 @@ service cloud.firestore {
         data.status in ['PENDING', 'COMPLETED', 'REJECTED', 'FAILED'] &&
         data.description is string && data.description.size() <= 300 &&
         data.createdAt is timestamp;
+    }
+
+    function isValidUserPlan(data) {
+      return data.keys().hasAll([
+          'userPlanId',
+          'uid',
+          'userId',
+          'planId',
+          'productName',
+          'imageUrl',
+          'coinCost',
+          'durationDays',
+          'totalRewardEntitlement',
+          'collectedReward',
+          'remainingReward',
+          'daysCompleted',
+          'remainingDays',
+          'startDate',
+          'endDate',
+          'nextRewardEligibilityTime',
+          'status',
+          'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'userPlanId',
+          'uid',
+          'userId',
+          'planId',
+          'productName',
+          'imageUrl',
+          'coinCost',
+          'durationDays',
+          'totalRewardEntitlement',
+          'collectedReward',
+          'remainingReward',
+          'daysCompleted',
+          'remainingDays',
+          'startDate',
+          'endDate',
+          'nextRewardEligibilityTime',
+          'status',
+          'createdAt'
+        ]) &&
+        isValidId(data.userPlanId) &&
+        isValidId(data.uid) &&
+        data.userId is string && data.userId.size() >= 8 && data.userId.size() <= 16 && data.userId.matches('^NX[0-9]{6,10}$') &&
+        isValidId(data.planId) && data.planId.size() <= 64 &&
+        data.productName is string && data.productName.size() >= 2 && data.productName.size() <= 120 &&
+        data.imageUrl is string && data.imageUrl.size() <= 500 &&
+        data.coinCost is int && data.coinCost >= 1 && data.coinCost <= 100000000 &&
+        data.durationDays is int && data.durationDays >= 1 && data.durationDays <= 365 &&
+        data.totalRewardEntitlement is int && data.totalRewardEntitlement >= 0 &&
+        data.collectedReward is int && data.collectedReward >= 0 &&
+        data.remainingReward is int && data.remainingReward >= 0 &&
+        data.daysCompleted is int && data.daysCompleted >= 0 &&
+        data.remainingDays is int && data.remainingDays >= 0 &&
+        data.startDate is string && data.startDate.size() >= 10 && data.startDate.size() <= 64 &&
+        data.endDate is string && data.endDate.size() >= 10 && data.endDate.size() <= 64 &&
+        (data.nextRewardEligibilityTime == null || (data.nextRewardEligibilityTime is string && data.nextRewardEligibilityTime.size() <= 64)) &&
+        data.status in ['ACTIVE', 'COMPLETED', 'CANCELLED'] &&
+        data.createdAt is timestamp;
+    }
+
+    function isMatchingActiveCatalogOrPublishedPlan(data) {
+      return (
+        exists(/databases/$(database)/documents/productPlans/$(data.planId)) &&
+        get(/databases/$(database)/documents/productPlans/$(data.planId)).data.isActive == true &&
+        data.productName == get(/databases/$(database)/documents/productPlans/$(data.planId)).data.productName &&
+        data.coinCost == get(/databases/$(database)/documents/productPlans/$(data.planId)).data.coinDeductionAmount &&
+        data.durationDays == get(/databases/$(database)/documents/productPlans/$(data.planId)).data.durationDays &&
+        data.totalRewardEntitlement == get(/databases/$(database)/documents/productPlans/$(data.planId)).data.totalCoinReward
+      ) || (
+        !exists(/databases/$(database)/documents/productPlans/$(data.planId)) &&
+        (
+          (data.planId == 'PLAN_LAPTOP_100' && data.productName == 'Laptop Plan' && data.coinCost == 100 && data.durationDays == 7 && data.totalRewardEntitlement == 188) ||
+          (data.planId == 'PLAN_MACHINERY_500' && data.productName == 'Machinery Plan' && data.coinCost == 500 && data.durationDays == 14 && data.totalRewardEntitlement == 650) ||
+          (data.planId == 'PLAN_SERVER_1000' && data.productName == 'Compute Node Plan' && data.coinCost == 1000 && data.durationDays == 21 && data.totalRewardEntitlement == 1320) ||
+          (data.planId == 'PLAN_ENERGY_5000' && data.productName == 'Grid Storage Plan' && data.coinCost == 5000 && data.durationDays == 30 && data.totalRewardEntitlement == 6600)
+        )
+      );
     }
 
     function isValidUpiAccount(data) {
@@ -849,6 +931,7 @@ service cloud.firestore {
         incoming().pendingTransactionCoins == 0 &&
         incoming().withdrawableBalanceInr == 0 &&
         !('lastWithdrawalRef' in incoming()) &&
+        !('lastPlanRef' in incoming()) &&
         incoming().updatedAt == request.time &&
         existsAfter(/databases/$(database)/documents/users/$(userId)) &&
         incoming().userId == getAfter(/databases/$(database)/documents/users/$(userId)).data.userId;
@@ -879,6 +962,25 @@ service cloud.firestore {
             getAfter(/databases/$(database)/documents/withdrawalRequests/$(incoming().lastWithdrawalRef)).data.status == 'PENDING' &&
             getAfter(/databases/$(database)/documents/withdrawalRequests/$(incoming().lastWithdrawalRef)).data.amountInr == (existing().withdrawableBalanceInr - incoming().withdrawableBalanceInr) &&
             existsAfter(/databases/$(database)/documents/coinTransactions/$('wtx_' + incoming().lastWithdrawalRef))
+          ) ||
+          (
+            request.auth.uid == userId &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['availableCoins', 'coinsUsedForPlans', 'lastPlanRef', 'updatedAt']) &&
+            incoming().purchasedCoins == existing().purchasedCoins &&
+            incoming().earnedCoins == existing().earnedCoins &&
+            incoming().pendingTransactionCoins == existing().pendingTransactionCoins &&
+            incoming().withdrawableBalanceInr == existing().withdrawableBalanceInr &&
+            incoming().availableCoins >= 0 &&
+            incoming().availableCoins < existing().availableCoins &&
+            incoming().coinsUsedForPlans == existing().coinsUsedForPlans + (existing().availableCoins - incoming().availableCoins) &&
+            'lastPlanRef' in incoming() &&
+            isValidId(incoming().lastPlanRef) &&
+            !exists(/databases/$(database)/documents/userPlans/$(incoming().lastPlanRef)) &&
+            existsAfter(/databases/$(database)/documents/userPlans/$(incoming().lastPlanRef)) &&
+            getAfter(/databases/$(database)/documents/userPlans/$(incoming().lastPlanRef)).data.uid == request.auth.uid &&
+            getAfter(/databases/$(database)/documents/userPlans/$(incoming().lastPlanRef)).data.status == 'ACTIVE' &&
+            getAfter(/databases/$(database)/documents/userPlans/$(incoming().lastPlanRef)).data.coinCost == (existing().availableCoins - incoming().availableCoins) &&
+            existsAfter(/databases/$(database)/documents/coinTransactions/$('ptx_' + incoming().lastPlanRef))
           )
         );
 
@@ -912,16 +1014,52 @@ service cloud.firestore {
             getAfter(/databases/$(database)/documents/withdrawalRequests/$(incoming().referenceId)).data.amountInr == (incoming().previousBalance - incoming().newBalance) &&
             existsAfter(/databases/$(database)/documents/coinWallets/$(request.auth.uid)) &&
             getAfter(/databases/$(database)/documents/coinWallets/$(request.auth.uid)).data.lastWithdrawalRef == incoming().referenceId
+          ) ||
+          (
+            incoming().uid == request.auth.uid &&
+            incoming().type == 'PLAN_INVESTMENT' &&
+            incoming().assetType == 'COINS' &&
+            incoming().status == 'COMPLETED' &&
+            incoming().newBalance >= 0 &&
+            incoming().newBalance < incoming().previousBalance &&
+            incoming().amount == (incoming().newBalance - incoming().previousBalance) &&
+            isValidId(incoming().referenceId) &&
+            transactionId == ('ptx_' + incoming().referenceId) &&
+            existsAfter(/databases/$(database)/documents/userPlans/$(incoming().referenceId)) &&
+            getAfter(/databases/$(database)/documents/userPlans/$(incoming().referenceId)).data.uid == request.auth.uid &&
+            getAfter(/databases/$(database)/documents/userPlans/$(incoming().referenceId)).data.coinCost == (incoming().previousBalance - incoming().newBalance) &&
+            existsAfter(/databases/$(database)/documents/coinWallets/$(request.auth.uid)) &&
+            getAfter(/databases/$(database)/documents/coinWallets/$(request.auth.uid)).data.lastPlanRef == incoming().referenceId
           )
         );
       allow update, delete: if false;
     }
 
-    // Structured Plan Enrollments
+    // Structured Plan Enrollments (Strictly gated behind ACTIVE member status, validated plan specs, and atomic coin deduction)
     match /userPlans/{userPlanId} {
       allow get: if isSignedIn() && isValidId(userPlanId) && (existing().uid == request.auth.uid || isAdmin());
       allow list: if isAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
-      allow create, update, delete: if false;
+      allow create: if isSignedIn() &&
+        isValidId(userPlanId) &&
+        isValidUserPlan(incoming()) &&
+        incoming().userPlanId == userPlanId &&
+        incoming().uid == request.auth.uid &&
+        incoming().status == 'ACTIVE' &&
+        incoming().collectedReward == 0 &&
+        incoming().remainingReward == incoming().totalRewardEntitlement &&
+        incoming().daysCompleted == 0 &&
+        incoming().remainingDays == incoming().durationDays &&
+        incoming().createdAt == request.time &&
+        !exists(/databases/$(database)/documents/userPlans/$(userPlanId)) &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status == 'ACTIVE' &&
+        isMatchingActiveCatalogOrPublishedPlan(incoming()) &&
+        exists(/databases/$(database)/documents/coinWallets/$(request.auth.uid)) &&
+        existsAfter(/databases/$(database)/documents/coinWallets/$(request.auth.uid)) &&
+        getAfter(/databases/$(database)/documents/coinWallets/$(request.auth.uid)).data.lastPlanRef == userPlanId &&
+        getAfter(/databases/$(database)/documents/coinWallets/$(request.auth.uid)).data.availableCoins == (get(/databases/$(database)/documents/coinWallets/$(request.auth.uid)).data.availableCoins - incoming().coinCost) &&
+        existsAfter(/databases/$(database)/documents/coinTransactions/$('ptx_' + userPlanId));
+      allow update, delete: if false;
     }
 
     // Daily Reward Credit Records

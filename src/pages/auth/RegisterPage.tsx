@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import {
+  ArrowRight,
   CheckCircle2,
   Eye,
   EyeOff,
@@ -12,6 +13,7 @@ import {
 import { AuthShell } from '../../components/auth/AuthShell';
 import { ROUTES } from '../../config/constants';
 import { useAuth } from '../../context/AuthContext';
+import { ILLUSTRATIVE_PLANS } from '../../data/catalogPreview';
 import { usePhoneOtp } from '../../hooks/usePhoneOtp';
 import {
   completePhoneOtpRegistration,
@@ -20,6 +22,14 @@ import {
   sendPhoneOtp,
 } from '../../services/authService';
 import { UserProfile } from '../../types/domain';
+import {
+  buildAuthUrlWithPlan,
+  extractSelectedPlanId,
+  loadPendingPlanId,
+  REDIRECT_QUERY_PARAM,
+  resolvePostAuthDestination,
+  savePendingPlanId,
+} from '../../utils/planNavigation';
 import {
   validateEmail,
   validateFullName,
@@ -32,9 +42,39 @@ type RegisterMethod = 'email' | 'phone';
 
 export function RegisterPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams] = useSearchParams();
   const referralCodeParam = searchParams.get('ref')?.trim().toUpperCase() || '';
   const { firebaseUser, profile: activeProfile, authReady } = useAuth();
+
+  const selectedPlanId = extractSelectedPlanId({
+    searchParams,
+    locationState: location.state,
+    useStorageFallback: true,
+  });
+  const redirectQuery = searchParams.get(REDIRECT_QUERY_PARAM);
+  const selectedPlanPreview = selectedPlanId
+    ? ILLUSTRATIVE_PLANS.find((p) => p.planId === selectedPlanId)
+    : undefined;
+
+  useEffect(() => {
+    if (selectedPlanId) {
+      savePendingPlanId(selectedPlanId);
+    }
+  }, [selectedPlanId]);
+
+  const postAuthDestination = resolvePostAuthDestination({
+    searchParams,
+    locationState: location.state,
+    storedPlanId: selectedPlanId || loadPendingPlanId(),
+    defaultRoute: ROUTES.USER_DASHBOARD,
+  });
+
+  const loginUrl = buildAuthUrlWithPlan(ROUTES.LOGIN, {
+    planId: selectedPlanId,
+    redirectPath: redirectQuery,
+    referralCode: referralCodeParam || null,
+  });
 
   const [method, setMethod] = useState<RegisterMethod>('email');
 
@@ -70,10 +110,10 @@ export function RegisterPage() {
 
   // If user is already logged in with a Firestore profile and didn't just complete registration here
   useEffect(() => {
-    if (authReady && firebaseUser && activeProfile && !confirmedProfile) {
-      navigate(ROUTES.USER_DASHBOARD, { replace: true });
+    if (authReady && firebaseUser && activeProfile && !confirmedProfile && !submitting) {
+      navigate(postAuthDestination, { replace: true });
     }
-  }, [authReady, firebaseUser, activeProfile, confirmedProfile, navigate]);
+  }, [authReady, firebaseUser, activeProfile, confirmedProfile, submitting, postAuthDestination, navigate]);
 
   const handleEmailRegister = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -213,13 +253,26 @@ export function RegisterPage() {
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={() => navigate(ROUTES.USER_DASHBOARD)}
-            className="w-full py-3 px-4 text-sm font-semibold text-[#0B1A30] bg-[#C59B3B] hover:bg-[#D8B45A] rounded-lg transition-colors cursor-pointer"
-          >
-            Continue to Member Dashboard
-          </button>
+          <div className="space-y-2.5">
+            <button
+              type="button"
+              onClick={() => navigate(postAuthDestination, { replace: true })}
+              className="w-full py-3 px-4 text-sm font-semibold text-[#0B1A30] bg-[#C59B3B] hover:bg-[#D8B45A] rounded-lg transition-colors cursor-pointer"
+            >
+              {selectedPlanId
+                ? `Continue to ${selectedPlanPreview?.productName || 'Selected Plan'}`
+                : 'Continue to Member Dashboard'}
+            </button>
+            {selectedPlanId && (
+              <button
+                type="button"
+                onClick={() => navigate(ROUTES.USER_DASHBOARD)}
+                className="w-full py-2.5 px-4 text-xs font-semibold text-[#0B1A30] border border-slate-300 hover:bg-slate-50 rounded-lg transition-colors cursor-pointer"
+              >
+                Go to Member Dashboard Instead
+              </button>
+            )}
+          </div>
         </div>
       </AuthShell>
     );
@@ -230,6 +283,19 @@ export function RegisterPage() {
       title="Create your account"
       subtitle="Permanent NX User IDs (e.g. NX100001) are assigned automatically after authentication succeeds."
     >
+      {selectedPlanId && (
+        <div className="p-3 bg-[#F8F1DE] border border-[#C59B3B]/50 rounded-lg flex items-center justify-between gap-2 text-xs text-[#0B1A30]">
+          <div>
+            <span className="font-semibold">Selected Plan:</span>{' '}
+            <span>{selectedPlanPreview?.productName || selectedPlanId}</span>
+          </div>
+          <span className="inline-flex items-center gap-1 font-semibold text-[#8A6518] shrink-0">
+            <span>Resumes after signup</span>
+            <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+          </span>
+        </div>
+      )}
+
       {/* Registration Method Switcher */}
       <div
         role="tablist"
@@ -547,7 +613,7 @@ export function RegisterPage() {
 
       <div className="pt-4 border-t border-slate-200 text-xs text-slate-600 text-center">
         Already registered?{' '}
-        <Link to={ROUTES.LOGIN} className="font-semibold text-[#0B1A30] hover:text-[#A37B22]">
+        <Link to={loginUrl} className="font-semibold text-[#0B1A30] hover:text-[#A37B22]">
           Sign in instead
         </Link>
       </div>

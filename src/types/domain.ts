@@ -105,6 +105,7 @@ export interface CoinWallet {
   pendingTransactionCoins: number;
   withdrawableBalanceInr: number;
   lastWithdrawalRef?: string;
+  lastPlanRef?: string;
   updatedAt: string;
 }
 

@@ -1,5 +1,10 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
+import {
+  browserLocalPersistence,
+  browserSessionPersistence,
+  getAuth,
+  setPersistence,
+} from 'firebase/auth';
 import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
@@ -9,6 +14,9 @@ export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
 if (typeof window !== 'undefined') {
   auth.useDeviceLanguage();
+  void setPersistence(auth, browserLocalPersistence).catch(() =>
+    setPersistence(auth, browserSessionPersistence).catch(() => {})
+  );
 }
 
 export enum OperationType {

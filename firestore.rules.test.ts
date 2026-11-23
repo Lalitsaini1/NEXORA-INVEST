@@ -143,5 +143,12 @@ test('firestore.rules enforces default-deny, zero-plaintext password, and strict
   assert.match(rules, /match \/withdrawalRequests\/\{withdrawalId\}[\s\S]*data\.payoutsEnabled == true/);
   assert.match(rules, /match \/withdrawalRequests\/\{withdrawalId\}[\s\S]*data\.verificationStatus == 'VERIFIED'/);
   assert.match(rules, /match \/coinTransactions\/\{transactionId\}[\s\S]*incoming\(\)\.assetType == 'INR'/);
+
+  // 21. Verified Plan Investment Flow: atomic UserPlan + CoinWallet coin deduction + PLAN_INVESTMENT ledger parity
+  assert.match(rules, /function isValidUserPlan\(data\)/);
+  assert.match(rules, /function isMatchingActiveCatalogOrPublishedPlan\(data\)/);
+  assert.match(rules, /match \/userPlans\/\{userPlanId\}[\s\S]*getAfter\(\/databases\/\$\(database\)\/documents\/coinWallets\/\$\(request\.auth\.uid\)\)\.data\.lastPlanRef == userPlanId/);
+  assert.match(rules, /match \/userPlans\/\{userPlanId\}[\s\S]*allow update, delete: if false;/);
+  assert.match(rules, /match \/coinTransactions\/\{transactionId\}[\s\S]*incoming\(\)\.type == 'PLAN_INVESTMENT'/);
 });
 

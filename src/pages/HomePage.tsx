@@ -1,14 +1,12 @@
-import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ArrowRight,
   CheckCircle2,
   ChevronDown,
-  Lock,
   Mail,
   Phone,
   ShieldAlert,
-  X,
 } from 'lucide-react';
 import {
   FAQ_ITEMS,
@@ -18,20 +16,35 @@ import {
   PLATFORM_CAPABILITIES,
 } from '../data/catalogPreview';
 import { ROUTES } from '../config/constants';
+import { useAuth } from '../context/AuthContext';
 import { useBrand } from '../context/BrandContext';
+import { subscribePublicProductPlans } from '../services/planService';
 import { ProductPlan } from '../types/domain';
-import { formatCoins, formatInr } from '../utils/formatters';
+import { resolveCatalogPlans } from '../utils/planInvestment';
+import {
+  buildAuthUrlWithPlan,
+  buildHomeReturnUrlWithPlan,
+  clearPendingPlanId,
+  loadPendingPlanId,
+  PLAN_QUERY_PARAM,
+  savePendingPlanId,
+} from '../utils/planNavigation';
 import { validateEmail, validateFullName } from '../utils/validators';
 import { ImageWithFallback } from '../components/common/ImageWithFallback';
+import { PlanInvestmentModal } from '../components/home/PlanInvestmentModal';
 import { ProductPlanCard } from '../components/home/ProductPlanCard';
 
 export function HomePage() {
   const { brand } = useBrand();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const { firebaseUser, profile, wallet, authReady, profileInitializing } = useAuth();
 
+  const [liveProductPlans, setLiveProductPlans] = useState<ProductPlan[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
   const [openFaqIndex, setOpenFaqIndex] = useState<number | null>(0);
-  const [selectedPlanForGate, setSelectedPlanForGate] = useState<ProductPlan | null>(null);
+  const [activePlanForModal, setActivePlanForModal] = useState<ProductPlan | null>(null);
+  const [queuedInvestPlanId, setQueuedInvestPlanId] = useState<string | null>(null);
 
   // Support / Contact form state
   const [contactName, setContactName] = useState('');
@@ -41,12 +54,103 @@ export function HomePage() {
   const [contactError, setContactError] = useState<string | null>(null);
   const [contactSubmitted, setContactSubmitted] = useState(false);
 
-  const categories = ['ALL', ...Array.from(new Set(ILLUSTRATIVE_PLANS.map((p) => p.category)))];
+  useEffect(() => {
+    const unsubscribe = subscribePublicProductPlans((plans) => {
+      setLiveProductPlans(plans);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const catalogPlans = useMemo(
+    () => resolveCatalogPlans(liveProductPlans, ILLUSTRATIVE_PLANS),
+    [liveProductPlans]
+  );
+
+  // Restore previously selected investment plan once user returns after authentication
+  const requestedPlanId = searchParams.get(PLAN_QUERY_PARAM)?.trim() || '';
+  useEffect(() => {
+    if (!authReady) return;
+    const candidatePlanId =
+      requestedPlanId || queuedInvestPlanId || (firebaseUser ? loadPendingPlanId() || '' : '');
+    if (!candidatePlanId) return;
+
+    const matchedPlan =
+      catalogPlans.find((p) => p.planId === candidatePlanId) ||
+      ILLUSTRATIVE_PLANS.find((p) => p.planId === candidatePlanId);
+    if (!matchedPlan) {
+      setQueuedInvestPlanId(null);
+      return;
+    }
+
+    if (firebaseUser) {
+      setQueuedInvestPlanId(null);
+      setActivePlanForModal(matchedPlan);
+      clearPendingPlanId();
+      if (requestedPlanId) {
+        const nextParams = new URLSearchParams(searchParams);
+        nextParams.delete(PLAN_QUERY_PARAM);
+        setSearchParams(nextParams, { replace: true });
+      }
+    } else if (requestedPlanId || queuedInvestPlanId) {
+      // Unauthenticated user clicked INVEST NOW or landed on /?plan=<id>; redirect to login preserving selection
+      setQueuedInvestPlanId(null);
+      savePendingPlanId(matchedPlan.planId);
+      const loginUrl = buildAuthUrlWithPlan(ROUTES.LOGIN, {
+        planId: matchedPlan.planId,
+        redirectPath: buildHomeReturnUrlWithPlan(matchedPlan.planId),
+      });
+      navigate(loginUrl, {
+        replace: true,
+        state: {
+          selectedPlanId: matchedPlan.planId,
+          redirectTo: buildHomeReturnUrlWithPlan(matchedPlan.planId),
+        },
+      });
+    }
+  }, [
+    authReady,
+    firebaseUser,
+    requestedPlanId,
+    queuedInvestPlanId,
+    catalogPlans,
+    searchParams,
+    setSearchParams,
+    navigate,
+  ]);
+
+  const handleInvestClick = (chosen: ProductPlan) => {
+    if (!authReady) {
+      savePendingPlanId(chosen.planId);
+      setQueuedInvestPlanId(chosen.planId);
+      return;
+    }
+
+    if (!firebaseUser) {
+      savePendingPlanId(chosen.planId);
+      const returnPath = buildHomeReturnUrlWithPlan(chosen.planId);
+      const loginUrl = buildAuthUrlWithPlan(ROUTES.LOGIN, {
+        planId: chosen.planId,
+        redirectPath: returnPath,
+      });
+      navigate(loginUrl, {
+        state: {
+          selectedPlanId: chosen.planId,
+          redirectTo: returnPath,
+        },
+      });
+      return;
+    }
+
+    clearPendingPlanId();
+    setActivePlanForModal(chosen);
+  };
+
+  const categories = ['ALL', ...Array.from(new Set(catalogPlans.map((p) => p.category)))];
 
   const visiblePlans =
     selectedCategory === 'ALL'
-      ? ILLUSTRATIVE_PLANS
-      : ILLUSTRATIVE_PLANS.filter((p) => p.category === selectedCategory);
+      ? catalogPlans
+      : catalogPlans.filter((p) => p.category === selectedCategory);
 
   const handleContactSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -279,7 +383,7 @@ export function HomePage() {
               <ProductPlanCard
                 key={plan.planId}
                 plan={plan}
-                onInvestClick={(chosen) => setSelectedPlanForGate(chosen)}
+                onInvestClick={handleInvestClick}
               />
             ))}
           </div>
@@ -597,88 +701,18 @@ export function HomePage() {
         </div>
       </section>
 
-      {/* INVEST NOW AUTH GATE MODAL */}
-      {selectedPlanForGate && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="invest-gate-title"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-[#0B1A30]/70 backdrop-blur-xs p-4"
-        >
-          <div className="w-full max-w-md bg-white border border-slate-200 rounded-xl p-6 space-y-5 shadow-xl">
-            <div className="flex items-start justify-between gap-4">
-              <div className="space-y-1">
-                <p className="text-xs font-semibold text-[#A37B22] uppercase">
-                  Authentication Required
-                </p>
-                <h3 id="invest-gate-title" className="font-display text-xl font-bold text-[#0B1A30]">
-                  {selectedPlanForGate.productName}
-                </h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setSelectedPlanForGate(null)}
-                className="p-1.5 text-slate-500 hover:text-[#0B1A30] rounded-lg hover:bg-slate-100 cursor-pointer"
-                aria-label="Close modal"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            <div className="p-4 bg-slate-50 border border-slate-200 rounded-lg space-y-2 text-sm">
-              <div className="flex justify-between">
-                <span className="text-slate-600">Plan Deduction</span>
-                <span className="font-mono font-semibold text-[#0B1A30] tabular-nums">
-                  {formatCoins(selectedPlanForGate.coinDeductionAmount)} (
-                  {formatInr(selectedPlanForGate.planPriceInr)})
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-600">Duration</span>
-                <span className="font-mono text-[#0B1A30] tabular-nums">
-                  {selectedPlanForGate.durationDays} Days
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-600">Scheduled Total Reward</span>
-                <span className="font-mono font-semibold text-[#A37B22] tabular-nums">
-                  {formatCoins(selectedPlanForGate.totalCoinReward)}
-                </span>
-              </div>
-            </div>
-
-            <p className="text-xs text-slate-600 leading-relaxed flex items-start gap-2">
-              <Lock className="h-4 w-4 text-[#0B1A30] shrink-0 mt-0.5" aria-hidden="true" />
-              <span>
-                Plan activation processes atomically against your verified INR &amp; virtual coin
-                ledger. Sign in or create an account to activate live structured investment plans.
-              </span>
-            </p>
-
-            <div className="grid grid-cols-2 gap-3 pt-1">
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedPlanForGate(null);
-                  navigate(ROUTES.LOGIN);
-                }}
-                className="py-2.5 px-4 text-sm font-semibold text-[#0B1A30] border border-slate-300 rounded-lg hover:bg-slate-50 cursor-pointer"
-              >
-                Sign In
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedPlanForGate(null);
-                  navigate(ROUTES.REGISTER);
-                }}
-                className="py-2.5 px-4 text-sm font-semibold text-white bg-[#0B1A30] hover:bg-[#13284A] rounded-lg cursor-pointer"
-              >
-                Register Account
-              </button>
-            </div>
-          </div>
-        </div>
+      {/* AUTHENTICATED PLAN INVESTMENT CONFIRMATION MODAL */}
+      {activePlanForModal && firebaseUser && (
+        <PlanInvestmentModal
+          plan={activePlanForModal}
+          profile={profile}
+          wallet={wallet}
+          profileInitializing={profileInitializing}
+          onClose={() => {
+            clearPendingPlanId();
+            setActivePlanForModal(null);
+          }}
+        />
       )}
     </div>
   );

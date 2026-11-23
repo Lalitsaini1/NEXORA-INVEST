@@ -420,45 +420,55 @@ export async function registerWithEmailPassword(params: {
 
   const user = credential.user;
 
-  try {
-    await updateProfile(user, { displayName: params.fullName.trim() });
-    await sendEmailVerification(user).catch(() => {
-      // Non-fatal if email verification rate-limited; profile creation still proceeds
-    });
-
-    const profile = await provisionUserProfileTransaction({
-      user,
-      fullName: params.fullName,
-      email: params.email,
-      mobile: params.mobile,
-      authProvider: 'password',
-      referralCode: params.referralCode,
-    });
-
-    await ensureReferralCodeRegistered(user.uid, profile.userId);
-    if (params.referralCode) {
-      await attributeReferralSignup({
-        referralCode: params.referralCode,
-        referredUid: user.uid,
-        referredUserId: profile.userId,
-      });
-    }
-    void recordUserActivity({
-      uid: user.uid,
-      category: 'SECURITY',
-      action: 'Account Registered',
-      details: `Member profile ${profile.userId} created via Email & Password`,
-    });
-
-    return { profile, user };
-  } catch (err) {
-    // Roll back orphan Firebase Auth account if Firestore provisioning or duplicate check fails
+  const registrationTask = (async (): Promise<{ profile: UserProfile; created: boolean }> => {
     try {
-      await deleteUser(user);
-    } catch {
-      await signOut(auth).catch(() => {});
+      await updateProfile(user, { displayName: params.fullName.trim() });
+      await sendEmailVerification(user).catch(() => {
+        // Non-fatal if email verification rate-limited; profile creation still proceeds
+      });
+
+      const profile = await provisionUserProfileTransaction({
+        user,
+        fullName: params.fullName,
+        email: params.email,
+        mobile: params.mobile,
+        authProvider: 'password',
+        referralCode: params.referralCode,
+      });
+
+      await ensureReferralCodeRegistered(user.uid, profile.userId);
+      if (params.referralCode) {
+        await attributeReferralSignup({
+          referralCode: params.referralCode,
+          referredUid: user.uid,
+          referredUserId: profile.userId,
+        });
+      }
+      void recordUserActivity({
+        uid: user.uid,
+        category: 'SECURITY',
+        action: 'Account Registered',
+        details: `Member profile ${profile.userId} created via Email & Password`,
+      });
+
+      return { profile, created: true };
+    } catch (err) {
+      // Roll back orphan Firebase Auth account if Firestore provisioning or duplicate check fails
+      try {
+        await deleteUser(user);
+      } catch {
+        await signOut(auth).catch(() => {});
+      }
+      throw err;
     }
-    throw err;
+  })();
+
+  pendingProfileInitializations.set(user.uid, registrationTask);
+  try {
+    const { profile } = await registrationTask;
+    return { profile, user };
+  } finally {
+    pendingProfileInitializations.delete(user.uid);
   }
 }
 
@@ -481,58 +491,77 @@ export async function completePhoneOtpRegistration(params: {
   const user = credential.user;
   const userDocPath = `users/${user.uid}`;
 
-  try {
-    const existingSnap = await getDoc(doc(db, 'users', user.uid));
-    if (existingSnap.exists()) {
-      const data = existingSnap.data() as Record<string, unknown>;
-      return {
-        user,
-        alreadyRegistered: true,
-        profile: mapFirestoreProfileData(user, data),
-      };
-    }
-  } catch (err) {
-    handleFirestoreError(err, OperationType.GET, userDocPath);
-  }
+  let resolveLock!: (val: { profile: UserProfile; created: boolean }) => void;
+  let rejectLock!: (reason?: unknown) => void;
+  const lockPromise = new Promise<{ profile: UserProfile; created: boolean }>((resolve, reject) => {
+    resolveLock = resolve;
+    rejectLock = reject;
+  });
+  // Register lock before any Firestore read so AuthContext never races with incomplete profile defaults
+  pendingProfileInitializations.set(user.uid, lockPromise);
 
   try {
-    if (params.fullName.trim()) {
-      await updateProfile(user, { displayName: params.fullName.trim() }).catch(() => {});
-    }
-
-    const profile = await provisionUserProfileTransaction({
-      user,
-      fullName: params.fullName,
-      email: params.email || '',
-      mobile: user.phoneNumber || '',
-      authProvider: 'phone',
-      referralCode: params.referralCode,
-    });
-
-    await ensureReferralCodeRegistered(user.uid, profile.userId);
-    if (params.referralCode) {
-      await attributeReferralSignup({
-        referralCode: params.referralCode,
-        referredUid: user.uid,
-        referredUserId: profile.userId,
-      });
-    }
-    void recordUserActivity({
-      uid: user.uid,
-      category: 'SECURITY',
-      action: 'Account Registered',
-      details: `Member profile ${profile.userId} created via Mobile OTP`,
-    });
-
-    return { profile, user, alreadyRegistered: false };
-  } catch (err) {
-    // If duplicate email lock failed on phone signup, delete newly created phone auth user if possible
     try {
-      await deleteUser(user);
-    } catch {
-      await signOut(auth).catch(() => {});
+      const existingSnap = await getDoc(doc(db, 'users', user.uid));
+      if (existingSnap.exists()) {
+        const data = existingSnap.data() as Record<string, unknown>;
+        const existingProfile = mapFirestoreProfileData(user, data);
+        resolveLock({ profile: existingProfile, created: false });
+        return {
+          user,
+          alreadyRegistered: true,
+          profile: existingProfile,
+        };
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.GET, userDocPath);
     }
+
+    try {
+      if (params.fullName.trim()) {
+        await updateProfile(user, { displayName: params.fullName.trim() }).catch(() => {});
+      }
+
+      const profile = await provisionUserProfileTransaction({
+        user,
+        fullName: params.fullName,
+        email: params.email || '',
+        mobile: user.phoneNumber || '',
+        authProvider: 'phone',
+        referralCode: params.referralCode,
+      });
+
+      await ensureReferralCodeRegistered(user.uid, profile.userId);
+      if (params.referralCode) {
+        await attributeReferralSignup({
+          referralCode: params.referralCode,
+          referredUid: user.uid,
+          referredUserId: profile.userId,
+        });
+      }
+      void recordUserActivity({
+        uid: user.uid,
+        category: 'SECURITY',
+        action: 'Account Registered',
+        details: `Member profile ${profile.userId} created via Mobile OTP`,
+      });
+
+      resolveLock({ profile, created: true });
+      return { profile, user, alreadyRegistered: false };
+    } catch (err) {
+      // If duplicate email lock failed on phone signup, delete newly created phone auth user if possible
+      try {
+        await deleteUser(user);
+      } catch {
+        await signOut(auth).catch(() => {});
+      }
+      throw err;
+    }
+  } catch (err) {
+    rejectLock(err);
     throw err;
+  } finally {
+    pendingProfileInitializations.delete(user.uid);
   }
 }
 

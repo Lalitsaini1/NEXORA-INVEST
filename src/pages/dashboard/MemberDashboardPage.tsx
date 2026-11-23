@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Navigate, useNavigate } from 'react-router-dom';
+import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   CheckCircle2,
   Coins,
@@ -22,6 +22,7 @@ import { ProfitProjectionCalculator } from '../../components/dashboard/ProfitPro
 import { ReferralSection } from '../../components/dashboard/ReferralSection';
 import { TransactionHistory } from '../../components/dashboard/TransactionHistory';
 import { UpiPaymentGateway } from '../../components/dashboard/UpiPaymentGateway';
+import { UserWalletControlCenter } from '../../components/dashboard/UserWalletControlCenter';
 import { ROUTES } from '../../config/constants';
 import { useAuth } from '../../context/AuthContext';
 import { usePhoneOtp } from '../../hooks/usePhoneOtp';
@@ -32,7 +33,12 @@ import {
   sendLinkPhoneOtp,
 } from '../../services/authService';
 import { DashboardTheme } from '../../types/domain';
-import { formatCoins, formatInr } from '../../utils/formatters';
+import { ILLUSTRATIVE_PLANS } from '../../data/catalogPreview';
+import {
+  buildAuthUrlWithPlan,
+  buildHomeReturnUrlWithPlan,
+  PLAN_QUERY_PARAM,
+} from '../../utils/planNavigation';
 import { validateIndianMobile, validateOtpCode } from '../../utils/validators';
 
 const THEME_STORAGE_KEY = 'nexora_dashboard_theme';
@@ -53,6 +59,11 @@ function loadInitialTheme(): DashboardTheme {
 
 export function MemberDashboardPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const pendingPlanId = searchParams.get(PLAN_QUERY_PARAM)?.trim() || '';
+  const pendingPlanPreview = pendingPlanId
+    ? ILLUSTRATIVE_PLANS.find((p) => p.planId === pendingPlanId)
+    : undefined;
   const {
     firebaseUser,
     profile,
@@ -94,7 +105,13 @@ export function MemberDashboardPage() {
   }
 
   if (!firebaseUser) {
-    return <Navigate to={ROUTES.LOGIN} replace />;
+    const loginTarget = pendingPlanId
+      ? buildAuthUrlWithPlan(ROUTES.LOGIN, {
+          planId: pendingPlanId,
+          redirectPath: buildHomeReturnUrlWithPlan(pendingPlanId),
+        })
+      : ROUTES.LOGIN;
+    return <Navigate to={loginTarget} replace />;
   }
 
   const isHighContrast = theme === 'high-contrast';
@@ -274,39 +291,38 @@ export function MemberDashboardPage() {
           </div>
         )}
 
+        {pendingPlanId && (
+          <div className="p-4 bg-[#F8F1DE] border border-[#C59B3B]/60 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="space-y-0.5 text-xs sm:text-sm text-[#0B1A30]">
+              <p className="font-bold">
+                Pending Investment Plan:{' '}
+                {pendingPlanPreview?.productName || pendingPlanId}
+              </p>
+              <p className="text-xs text-slate-700">
+                Complete a verified UPI deposit below if needed, then return to confirm your plan
+                once coins are credited.
+              </p>
+            </div>
+            <Link
+              to={buildHomeReturnUrlWithPlan(pendingPlanId)}
+              className="inline-flex items-center justify-center px-4 py-2 text-xs font-semibold text-white bg-[#0B1A30] hover:bg-[#13284A] rounded-lg whitespace-nowrap shrink-0"
+            >
+              Return to Plan Confirmation
+            </Link>
+          </div>
+        )}
+
         {/* Session-persistent Pro Tips Banner */}
         <ProTipsBanner highContrast={isHighContrast} />
 
-        {/* Live Firestore Wallet Summary (strictly real Firestore state, never mocked) */}
-        <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className={`${cardSurfaceClass} p-5 space-y-1`}>
-            <p className="text-xs text-slate-500 flex items-center gap-1.5">
-              <Coins className="h-3.5 w-3.5 text-[#A37B22]" aria-hidden="true" />
-              <span>Available Coins</span>
-            </p>
-            <p className="font-mono text-2xl font-bold text-[#0B1A30] tabular-nums">
-              {formatCoins(wallet?.availableCoins ?? 0)}
-            </p>
-          </div>
-          <div className={`${cardSurfaceClass} p-5 space-y-1`}>
-            <p className="text-xs text-slate-500">Purchased Coins</p>
-            <p className="font-mono text-2xl font-bold text-[#0B1A30] tabular-nums">
-              {formatCoins(wallet?.purchasedCoins ?? 0)}
-            </p>
-          </div>
-          <div className={`${cardSurfaceClass} p-5 space-y-1`}>
-            <p className="text-xs text-slate-500">Earned Reward Coins</p>
-            <p className="font-mono text-2xl font-bold text-[#0B1A30] tabular-nums">
-              {formatCoins(wallet?.earnedCoins ?? 0)}
-            </p>
-          </div>
-          <div className={`${cardSurfaceClass} p-5 space-y-1`}>
-            <p className="text-xs text-slate-500">Withdrawable Balance</p>
-            <p className="font-mono text-2xl font-bold text-slate-700 tabular-nums">
-              {formatInr(wallet?.withdrawableBalanceInr ?? 0)}
-            </p>
-          </div>
-        </section>
+        {/* User Wallet Control Center (Segregated Balances, UPI, Bank, Withdrawals) */}
+        <UserWalletControlCenter
+          uid={firebaseUser.uid}
+          userId={profile?.userId}
+          accountStatus={profile?.status}
+          wallet={wallet}
+          highContrast={isHighContrast}
+        />
 
         {/* Investment History (Live Firestore past plans, deposits, rewards, and payouts) */}
         <InvestmentHistory uid={firebaseUser.uid} highContrast={isHighContrast} />

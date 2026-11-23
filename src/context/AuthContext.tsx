@@ -161,7 +161,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         (error) => {
           setProfileInitializing(false);
           setAuthReady(true);
-          handleFirestoreError(error, OperationType.GET, userPath);
+          try {
+            handleFirestoreError(error, OperationType.GET, userPath);
+          } catch (err) {
+            setProfileInitError(mapFirebaseError(err));
+          }
         }
       );
 
@@ -180,6 +184,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               coinsUsedForPlans: Number(data.coinsUsedForPlans || 0),
               pendingTransactionCoins: Number(data.pendingTransactionCoins || 0),
               withdrawableBalanceInr: Number(data.withdrawableBalanceInr || 0),
+              lastWithdrawalRef: data.lastWithdrawalRef
+                ? String(data.lastWithdrawalRef)
+                : undefined,
+              lastPlanRef: data.lastPlanRef ? String(data.lastPlanRef) : undefined,
               updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate().toISOString() : '',
             });
           } else {
@@ -187,7 +195,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }
         },
         (error) => {
-          handleFirestoreError(error, OperationType.GET, walletPath);
+          try {
+            handleFirestoreError(error, OperationType.GET, walletPath);
+          } catch {
+            // Non-blocking: logged cleanly inside handleFirestoreError without crashing listener
+          }
         }
       );
 
@@ -202,7 +214,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           recomputeRoles();
         },
         (error) => {
-          handleFirestoreError(error, OperationType.GET, adminPath);
+          try {
+            handleFirestoreError(error, OperationType.GET, adminPath);
+          } catch {
+            // Non-blocking: normal users have read access to own adminUsers doc if exists, otherwise ignored
+          }
         }
       );
     });
