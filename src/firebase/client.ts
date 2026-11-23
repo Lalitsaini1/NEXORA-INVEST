@@ -6,12 +6,14 @@ import {
   setPersistence,
 } from 'firebase/auth';
 import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
+import { getFunctions } from 'firebase/functions';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
 
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
+export const functions = getFunctions(app);
 if (typeof window !== 'undefined') {
   auth.useDeviceLanguage();
   void setPersistence(auth, browserLocalPersistence).catch(() =>
@@ -73,7 +75,7 @@ export function handleFirestoreError(
 
 async function testConnection() {
   try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
+    await getDocFromServer(doc(db, 'productPlans', '_health'));
   } catch (error) {
     if (error instanceof Error && error.message.includes('the client is offline')) {
       console.error('Please check your Firebase configuration.');

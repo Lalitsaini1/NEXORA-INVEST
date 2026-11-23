@@ -13,11 +13,20 @@ import {
   X,
 } from 'lucide-react';
 import { ROUTES } from '../../config/constants';
+import { useAuth } from '../../context/AuthContext';
 import { investInProductPlan } from '../../services/planService';
 import { CoinWallet, ProductPlan, UserPlan, UserProfile } from '../../types/domain';
 import { calculateDailyDistribution, formatCoins, formatInr } from '../../utils/formatters';
 import { evaluatePlanInvestmentEligibility } from '../../utils/planInvestment';
 import { buildAuthUrlWithPlan } from '../../utils/planNavigation';
+
+function createSessionIdempotencyKey(planId: string): string {
+  const rand =
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID().replace(/-/g, '').slice(0, 12)
+      : Math.random().toString(36).slice(2, 12);
+  return `${planId}_${Date.now()}_${rand}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 96);
+}
 
 interface PlanInvestmentModalProps {
   plan: ProductPlan;
@@ -34,11 +43,16 @@ export function PlanInvestmentModal({
   profileInitializing,
   onClose,
 }: PlanInvestmentModalProps) {
+  const { firebaseUser } = useAuth();
   const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmedPlan, setConfirmedPlan] = useState<UserPlan | null>(null);
   const [coinTxId, setCoinTxId] = useState<string | null>(null);
+  const [savedRequestId, setSavedRequestId] = useState<string | null>(null);
+  const [idempotencyKey, setIdempotencyKey] = useState(() =>
+    createSessionIdempotencyKey(plan.planId)
+  );
 
   useEffect(() => {
     setAcceptedTerms(false);
@@ -46,6 +60,8 @@ export function PlanInvestmentModal({
     setError(null);
     setConfirmedPlan(null);
     setCoinTxId(null);
+    setSavedRequestId(null);
+    setIdempotencyKey(createSessionIdempotencyKey(plan.planId));
   }, [plan.planId]);
 
   const availableCoins = wallet?.availableCoins ?? 0;
@@ -70,6 +86,11 @@ export function PlanInvestmentModal({
     if (submitting || !profile || !wallet) return;
     setError(null);
 
+    if (!firebaseUser || profile.uid !== firebaseUser.uid) {
+      setError('Active Firebase Authentication session mismatch. Please sign in again.');
+      return;
+    }
+
     if (!eligibility.eligible) {
       setError(eligibility.reason || 'Cannot confirm investment.');
       return;
@@ -82,9 +103,11 @@ export function PlanInvestmentModal({
         userId: profile.userId,
         plan,
         acceptedTerms,
+        idempotencyKey,
       });
       setConfirmedPlan(result.userPlan);
       setCoinTxId(result.coinTransactionId);
+      setSavedRequestId(result.requestId);
     } catch (err) {
       setError(
         err instanceof Error
@@ -187,8 +210,8 @@ export function PlanInvestmentModal({
                     Investment Activated &amp; Recorded in Firestore Ledger
                   </p>
                   <p className="text-xs text-emerald-800">
-                    {formatCoins(confirmedPlan.coinCost)} deducted atomically from your verified
-                    wallet. Your {confirmedPlan.durationDays}-day reward cycle is now active.
+                    {formatCoins(confirmedPlan.coinCost)} verified and deducted via backend ledger
+                    transaction. Your {confirmedPlan.durationDays}-day reward cycle is now active.
                   </p>
                 </div>
               </div>
@@ -199,6 +222,11 @@ export function PlanInvestmentModal({
                 {coinTxId && (
                   <div>
                     <span className="text-emerald-700">Ledger Tx:</span> {coinTxId}
+                  </div>
+                )}
+                {savedRequestId && (
+                  <div className="sm:col-span-2">
+                    <span className="text-emerald-700">Request ID:</span> {savedRequestId}
                   </div>
                 )}
               </div>

@@ -806,6 +806,50 @@
         "timestamp": { "type": "string", "format": "date-time" }
       },
       "required": ["attemptId", "uid", "email", "role", "outcome", "timestamp"]
+    },
+    "InvestmentRequest": {
+      "title": "InvestmentRequest",
+      "description": "User-submitted investment intent pending backend payment/balance verification and Cloud Function activation.",
+      "type": "object",
+      "properties": {
+        "requestId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 8, "maxLength": 16, "pattern": "^NX[0-9]{6,10}$" },
+        "planId": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "productName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "planPriceInr": { "type": "integer" },
+        "coinCost": { "type": "integer" },
+        "durationDays": { "type": "integer" },
+        "totalRewardEntitlement": { "type": "integer" },
+        "acceptedTerms": { "type": "boolean" },
+        "idempotencyKey": { "type": "string", "minLength": 4, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "status": { "type": "string", "enum": ["PENDING_VERIFICATION", "ACTIVATED", "REJECTED", "FAILED"] },
+        "paymentStatus": { "type": "string", "enum": ["PENDING", "VERIFIED", "INSUFFICIENT_BALANCE", "FAILED"] },
+        "activatedUserPlanId": { "type": "string", "maxLength": 128 },
+        "coinTransactionId": { "type": "string", "maxLength": 128 },
+        "verifiedByUid": { "type": "string", "maxLength": 128 },
+        "failureReason": { "type": "string", "maxLength": 300 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "activatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "requestId",
+        "uid",
+        "userId",
+        "planId",
+        "productName",
+        "planPriceInr",
+        "coinCost",
+        "durationDays",
+        "totalRewardEntitlement",
+        "acceptedTerms",
+        "idempotencyKey",
+        "status",
+        "paymentStatus",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -832,6 +876,10 @@
     "/userPlans/{userPlanId}": {
       "schema": { "$ref": "#/entities/UserPlan" },
       "description": "User-owned structured plan enrollments and collected reward progress."
+    },
+    "/investmentRequests/{requestId}": {
+      "schema": { "$ref": "#/entities/InvestmentRequest" },
+      "description": "User-submitted investment requests verified and activated exclusively by backend Cloud Functions."
     },
     "/dailyRewards/{rewardId}": {
       "schema": { "$ref": "#/entities/DailyRewardRecord" },

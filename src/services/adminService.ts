@@ -12,8 +12,9 @@ import {
   Unsubscribe,
   updateDoc,
 } from 'firebase/firestore';
+import { httpsCallable } from 'firebase/functions';
 import { SUPER_ADMIN_UID } from '../config/constants';
-import { OperationType, db, handleFirestoreError } from '../firebase/client';
+import { OperationType, db, functions, handleFirestoreError } from '../firebase/client';
 import {
   AccountStatus,
   AdminActionType,
@@ -1049,6 +1050,38 @@ export async function reviewDepositRequest(params: {
   rejectionReason?: string;
 }): Promise<void> {
   const depositId = params.deposit.depositId;
+
+  // Prefer backend Cloud Function for payment verification, credit lock enforcement, and audit logging
+  try {
+    const verifyDepositFn = httpsCallable<
+      {
+        depositId: string;
+        decision: 'APPROVED' | 'REJECTED';
+        rejectionReason?: string;
+      },
+      { ok: boolean }
+    >(functions, 'adminVerifyDepositAndCredit');
+
+    await verifyDepositFn({
+      depositId,
+      decision: params.decision,
+      rejectionReason: params.rejectionReason,
+    });
+    return;
+  } catch (fnErr) {
+    const code =
+      typeof fnErr === 'object' && fnErr !== null && 'code' in fnErr
+        ? String((fnErr as { code: unknown }).code)
+        : '';
+    if (code !== 'functions/not-found' && code !== 'functions/unavailable') {
+      if (fnErr instanceof Error) {
+        throw fnErr;
+      }
+      throw new Error('Unable to verify deposit request.');
+    }
+    // Fall back to Admin-authorized Firestore transaction only when Cloud Functions are not deployed yet
+  }
+
   const paymentTxId = buildPaymentTxId(depositId);
   const creditLockId = buildDepositCreditLockId(depositId);
   const coinTxId = buildCoinTxIdForDeposit(depositId);
@@ -1384,6 +1417,37 @@ export async function reviewWithdrawalRequest(params: {
   nextStatus: 'PROCESSING' | 'APPROVED' | 'COMPLETED' | 'PAID' | 'REJECTED';
   remarks?: string;
 }): Promise<void> {
+  // Prefer backend Cloud Function for atomic withdrawal status transition and refund ledger writes
+  try {
+    const reviewWithdrawalFn = httpsCallable<
+      {
+        withdrawalId: string;
+        nextStatus: 'PROCESSING' | 'APPROVED' | 'COMPLETED' | 'PAID' | 'REJECTED';
+        remarks?: string;
+      },
+      { ok: boolean }
+    >(functions, 'adminReviewWithdrawalFn');
+
+    await reviewWithdrawalFn({
+      withdrawalId: params.withdrawal.withdrawalId,
+      nextStatus: params.nextStatus,
+      remarks: params.remarks,
+    });
+    return;
+  } catch (fnErr) {
+    const code =
+      typeof fnErr === 'object' && fnErr !== null && 'code' in fnErr
+        ? String((fnErr as { code: unknown }).code)
+        : '';
+    if (code !== 'functions/not-found' && code !== 'functions/unavailable') {
+      if (fnErr instanceof Error) {
+        throw fnErr;
+      }
+      throw new Error('Unable to review withdrawal request.');
+    }
+    // Fall back to Admin-authorized Firestore transaction only when Cloud Functions are not deployed yet
+  }
+
   const wdRef = doc(db, 'withdrawalRequests', params.withdrawal.withdrawalId);
   const walletRef = doc(db, 'coinWallets', params.withdrawal.uid);
   const refundTxId = `wref_${params.withdrawal.withdrawalId}`;

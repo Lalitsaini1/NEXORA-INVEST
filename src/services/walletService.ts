@@ -12,7 +12,8 @@ import {
   where,
   writeBatch,
 } from 'firebase/firestore';
-import { OperationType, db, handleFirestoreError } from '../firebase/client';
+import { httpsCallable } from 'firebase/functions';
+import { OperationType, auth, db, functions, handleFirestoreError } from '../firebase/client';
 import {
   PayoutMethodType,
   PayoutVerificationStatus,
@@ -31,7 +32,6 @@ import {
   sanitizeBankAccountDigits,
   validateBankAccountInput,
   validateUserUpiId,
-  validateWithdrawalAmountInr,
 } from '../utils/walletControl';
 
 function toIso(raw: unknown): string {
@@ -476,6 +476,9 @@ export async function submitWalletWithdrawal(params: {
 }): Promise<{ withdrawalId: string; amountInr: number }> {
   const cleanUid = params.uid.trim();
   const cleanUserId = params.userId.trim();
+  if (!auth.currentUser || auth.currentUser.uid !== cleanUid) {
+    throw new Error('Active Firebase Authentication session is required to submit a withdrawal.');
+  }
   if (!cleanUid || !/^NX[0-9]{6,10}$/.test(cleanUserId)) {
     throw new Error('Verified NEXORA User ID is required to submit a withdrawal.');
   }
@@ -499,132 +502,39 @@ export async function submitWalletWithdrawal(params: {
     );
   }
 
-  const withdrawalId = createId('wd');
-  const coinTxId = `wtx_${withdrawalId}`;
-  const idempotencyKey = params.idempotencyKey || `${cleanUid}_${withdrawalId}`;
-  const activityLogId = createId('ulog');
-
-  const destinationMasked =
-    params.payoutMethod.methodType === 'UPI'
-      ? `${params.payoutMethod.upiProvider || 'UPI'} · ${maskUpiId(params.payoutMethod.upiId || '')}`
-      : `${params.payoutMethod.bankName || 'Bank'} · ${params.payoutMethod.accountNumberMasked || `•••• ${params.payoutMethod.accountLast4 || ''}`} (${params.payoutMethod.ifscCode || ''})`;
-
-  const userRef = doc(db, 'users', cleanUid);
-  const walletRef = doc(db, 'coinWallets', cleanUid);
-  const settingsRef = doc(db, 'platformSettings', 'global');
-  const methodRef = doc(db, 'userPayoutMethods', params.payoutMethod.methodId);
-  const withdrawalRef = doc(db, 'withdrawalRequests', withdrawalId);
-  const txRef = doc(db, 'coinTransactions', coinTxId);
-  const activityRef = doc(db, 'userActivityLogs', activityLogId);
+  const rawKey = params.idempotencyKey || `${cleanUid}_${Date.now()}`;
+  const idempotencyKey = rawKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
 
   try {
-    await runTransaction(db, async (tx) => {
-      const [userSnap, walletSnap, settingsSnap, methodSnap, existingWdSnap, existingTxSnap] =
-        await Promise.all([
-          tx.get(userRef),
-          tx.get(walletRef),
-          tx.get(settingsRef),
-          tx.get(methodRef),
-          tx.get(withdrawalRef),
-          tx.get(txRef),
-        ]);
+    const withdrawFn = httpsCallable<
+      {
+        amountInr: number;
+        payoutMethodId: string;
+        idempotencyKey: string;
+      },
+      { withdrawalId: string; amountInr: number }
+    >(functions, 'submitWalletWithdrawalFn');
 
-      if (!userSnap.exists() || userSnap.data().status !== 'ACTIVE') {
-        throw new Error('Only active member accounts can initiate withdrawals.');
-      }
-
-      if (!settingsSnap.exists() || settingsSnap.data().payoutsEnabled !== true) {
-        throw new Error(
-          'Real-money withdrawals are currently disabled pending regulatory and payment channel activation.'
-        );
-      }
-
-      if (!methodSnap.exists() || methodSnap.data().uid !== cleanUid) {
-        throw new Error('Selected payout destination was not found.');
-      }
-      if (methodSnap.data().verificationStatus !== 'VERIFIED') {
-        throw new Error('Payout destination ownership is not yet verified.');
-      }
-
-      if (!walletSnap.exists()) {
-        throw new Error('Your wallet record is still initializing.');
-      }
-
-      if (existingWdSnap.exists() || existingTxSnap.exists()) {
-        throw new Error('Duplicate withdrawal transaction detected. Please retry.');
-      }
-
-      const prevEligibleInr = Number(walletSnap.data().withdrawableBalanceInr || 0);
-      const amountErr = validateWithdrawalAmountInr(cleanAmount, prevEligibleInr);
-      if (amountErr) {
-        throw new Error(amountErr);
-      }
-
-      const nextEligibleInr = prevEligibleInr - cleanAmount;
-
-      // Atomic deduction strictly on withdrawableBalanceInr; Coin balances remain untouched.
-      tx.update(walletRef, {
-        withdrawableBalanceInr: nextEligibleInr,
-        lastWithdrawalRef: withdrawalId,
-        updatedAt: serverTimestamp(),
-      });
-
-      tx.set(withdrawalRef, {
-        withdrawalId,
-        uid: cleanUid,
-        userId: cleanUserId,
-        amountInr: cleanAmount,
-        payoutMethodId: params.payoutMethod.methodId,
-        payoutMethodType: params.payoutMethod.methodType,
-        payoutLabel: params.payoutMethod.label.slice(0, 60),
-        payoutDestinationMasked: destinationMasked.slice(0, 120),
-        idempotencyKey: idempotencyKey.slice(0, 128),
-        status: 'PENDING',
-        remarks: `Submitted to verified ${params.payoutMethod.methodType === 'UPI' ? 'UPI' : 'Bank Account'} (${params.payoutMethod.label})`.slice(
-          0,
-          300
-        ),
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-
-      tx.set(txRef, {
-        transactionId: coinTxId,
-        uid: cleanUid,
-        userId: cleanUserId,
-        type: 'WITHDRAWAL_REQUEST',
-        assetType: 'INR',
-        amount: -cleanAmount,
-        previousBalance: prevEligibleInr,
-        newBalance: nextEligibleInr,
-        referenceId: withdrawalId,
-        idempotencyKey: idempotencyKey.slice(0, 128),
-        status: 'PENDING',
-        description: `INR Withdrawal ₹${cleanAmount.toLocaleString('en-IN')} to ${destinationMasked}`.slice(
-          0,
-          300
-        ),
-        createdAt: serverTimestamp(),
-      });
-
-      tx.set(activityRef, {
-        logId: activityLogId,
-        uid: cleanUid,
-        category: 'WALLET',
-        action: 'INR_WITHDRAWAL_REQUESTED',
-        details: `Requested ₹${cleanAmount.toLocaleString('en-IN')} withdrawal (${withdrawalId}) to ${destinationMasked}`.slice(
-          0,
-          300
-        ),
-        createdAt: serverTimestamp(),
-      });
+    const response = await withdrawFn({
+      amountInr: cleanAmount,
+      payoutMethodId: params.payoutMethod.methodId,
+      idempotencyKey,
     });
+
+    return response.data;
   } catch (err) {
-    if (err instanceof Error && !err.message.includes('PERMISSION_DENIED')) {
+    const code =
+      typeof err === 'object' && err !== null && 'code' in err
+        ? String((err as { code: unknown }).code)
+        : '';
+    if (code === 'functions/not-found' || code === 'functions/unavailable') {
+      throw new Error(
+        'Backend withdrawal ledger service (submitWalletWithdrawalFn) is not deployed or unreachable on this Firebase project.'
+      );
+    }
+    if (err instanceof Error && err.message) {
       throw err;
     }
-    handleFirestoreError(err, OperationType.WRITE, `withdrawalRequests/${withdrawalId}`);
+    throw new Error('Unable to submit withdrawal request.');
   }
-
-  return { withdrawalId, amountInr: cleanAmount };
 }

@@ -32,6 +32,41 @@ export type PayoutVerificationStatus =
 
 export type UserPlanStatus = 'ACTIVE' | 'COMPLETED' | 'CANCELLED';
 
+export type InvestmentRequestStatus =
+  | 'PENDING_VERIFICATION'
+  | 'ACTIVATED'
+  | 'REJECTED'
+  | 'FAILED';
+
+export type InvestmentPaymentStatus =
+  | 'PENDING'
+  | 'VERIFIED'
+  | 'INSUFFICIENT_BALANCE'
+  | 'FAILED';
+
+export interface InvestmentRequest {
+  requestId: string;
+  uid: string;
+  userId: string;
+  planId: string;
+  productName: string;
+  planPriceInr: number;
+  coinCost: number;
+  durationDays: number;
+  totalRewardEntitlement: number;
+  acceptedTerms: boolean;
+  idempotencyKey: string;
+  status: InvestmentRequestStatus;
+  paymentStatus: InvestmentPaymentStatus;
+  activatedUserPlanId?: string;
+  coinTransactionId?: string;
+  verifiedByUid?: string;
+  failureReason?: string;
+  createdAt: string;
+  updatedAt: string;
+  activatedAt?: string;
+}
+
 export type DashboardTheme = 'navy' | 'high-contrast';
 
 export type UserActivityCategory =

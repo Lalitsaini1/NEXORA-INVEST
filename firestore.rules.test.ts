@@ -38,7 +38,7 @@ test('firestore.rules enforces default-deny, zero-plaintext password, and strict
   assert.match(rules, /existsAfter\(\/databases\/\$\(database\)\/documents\/counters\/userIds\)/);
   assert.match(rules, /getAfter\(\/databases\/\$\(database\)\/documents\/counters\/userIds\)\.data\.nextNumber/);
 
-  // 6. CoinWallet zero initialization & admin-only update enforcement
+  // 6. CoinWallet zero initialization & backend/admin-only update enforcement (regular members cannot self-edit wallet balances)
   assert.match(rules, /incoming\(\)\.availableCoins == 0/);
   assert.match(rules, /match \/coinWallets\/\{userId\}[\s\S]*allow update: if isSignedIn\(\)[\s\S]*isAdmin\(\)/);
   assert.match(rules, /match \/coinWallets\/\{userId\}[\s\S]*allow delete: if false;/);
@@ -54,12 +54,12 @@ test('firestore.rules enforces default-deny, zero-plaintext password, and strict
   assert.match(rules, /incoming\(\)\.createdAt == request\.time/);
   assert.match(rules, /incoming\(\)\.updatedAt == request\.time/);
 
-  // 10. CoinTransaction ledger: blueprint exists, owner-scoped list/get, immutable updates/deletes denied
+  // 10. CoinTransaction ledger: blueprint exists, owner-scoped null-safe list/get, admin-only create, immutable updates/deletes denied
   assert.ok('CoinTransaction' in blueprint.entities);
   assert.ok('/coinTransactions/{transactionId}' in blueprint.firestore);
   assert.match(
     rules,
-    /match \/coinTransactions\/\{transactionId\}[\s\S]*allow list: if isAdmin\(\) \|\| \(isSignedIn\(\) && resource\.data\.uid == request\.auth\.uid\);[\s\S]*allow update, delete: if false;/
+    /match \/coinTransactions\/\{transactionId\}[\s\S]*allow get: if isSignedIn\(\) && isValidId\(transactionId\) && \(resource == null \|\| existing\(\)\.uid == request\.auth\.uid \|\| isAdmin\(\)\);[\s\S]*allow list: if isAdmin\(\) \|\| \(isSignedIn\(\) && resource\.data\.uid == request\.auth\.uid\);[\s\S]*allow create: if isSignedIn\(\) &&[\s\S]*isAdmin\(\)[\s\S]*allow update, delete: if false;/
   );
 
   // 11. AdminActivityLog & UserActivityLog immutable append-only rules
@@ -81,6 +81,7 @@ test('firestore.rules enforces default-deny, zero-plaintext password, and strict
     '/referrals/{referralId}',
     '/referralCodes/{code}',
     '/userPlans/{userPlanId}',
+    '/investmentRequests/{requestId}',
     '/dailyRewards/{rewardId}',
     '/adminLoginAttempts/{attemptId}',
   ]) {
@@ -134,21 +135,41 @@ test('firestore.rules enforces default-deny, zero-plaintext password, and strict
   assert.match(rules, /match \/coinPackages\/\{packageId\}[\s\S]*isAdmin\(\)/);
   assert.match(rules, /get\(\/databases\/\$\(database\)\/documents\/coinPackages\/\$\(incoming\(\)\.packageId\)\)\.data\.totalCoins/);
 
-  // 20. User Wallet Control System: UserPayoutMethod isolation, anti-self-verification, and atomic INR withdrawal ledger locks
+  // 20. User Wallet Control System: UserPayoutMethod owner isolation & anti-self-verification, plus backend/admin-only withdrawal creation
   assert.ok('UserPayoutMethod' in blueprint.entities);
   assert.ok('/userPayoutMethods/{methodId}' in blueprint.firestore);
   assert.match(rules, /function isValidUserPayoutMethod\(data\)/);
   assert.match(rules, /match \/userPayoutMethods\/\{methodId\}[\s\S]*incoming\(\)\.verificationStatus == 'PENDING_VERIFICATION'/);
-  assert.match(rules, /match \/coinWallets\/\{userId\}[\s\S]*incoming\(\)\.availableCoins == existing\(\)\.availableCoins/);
-  assert.match(rules, /match \/withdrawalRequests\/\{withdrawalId\}[\s\S]*data\.payoutsEnabled == true/);
-  assert.match(rules, /match \/withdrawalRequests\/\{withdrawalId\}[\s\S]*data\.verificationStatus == 'VERIFIED'/);
-  assert.match(rules, /match \/coinTransactions\/\{transactionId\}[\s\S]*incoming\(\)\.assetType == 'INR'/);
+  assert.match(rules, /match \/withdrawalRequests\/\{withdrawalId\}[\s\S]*allow create: if isSignedIn\(\) &&[\s\S]*isAdmin\(\)/);
+  assert.match(rules, /match \/withdrawalRequests\/\{withdrawalId\}[\s\S]*allow update: if isSignedIn\(\) &&[\s\S]*isAdmin\(\)/);
 
-  // 21. Verified Plan Investment Flow: atomic UserPlan + CoinWallet coin deduction + PLAN_INVESTMENT ledger parity
+  // 21. Hardened Investment Flow & Null-Safe Allow-Get Guards:
+  // Members may create strictly PENDING_VERIFICATION / PENDING investmentRequests matching active plans,
+  // while userPlans activation & coinTransactions ledger entries remain backend/Admin-only.
+  assert.ok('InvestmentRequest' in blueprint.entities);
   assert.match(rules, /function isValidUserPlan\(data\)/);
+  assert.match(rules, /function isValidInvestmentRequest\(data\)/);
   assert.match(rules, /function isMatchingActiveCatalogOrPublishedPlan\(data\)/);
-  assert.match(rules, /match \/userPlans\/\{userPlanId\}[\s\S]*getAfter\(\/databases\/\$\(database\)\/documents\/coinWallets\/\$\(request\.auth\.uid\)\)\.data\.lastPlanRef == userPlanId/);
-  assert.match(rules, /match \/userPlans\/\{userPlanId\}[\s\S]*allow update, delete: if false;/);
-  assert.match(rules, /match \/coinTransactions\/\{transactionId\}[\s\S]*incoming\(\)\.type == 'PLAN_INVESTMENT'/);
+  assert.match(
+    rules,
+    /match \/investmentRequests\/\{requestId\}[\s\S]*incoming\(\)\.status == 'PENDING_VERIFICATION'[\s\S]*incoming\(\)\.paymentStatus == 'PENDING'[\s\S]*isMatchingActiveCatalogOrPublishedPlan\(incoming\(\)\)/
+  );
+  assert.match(
+    rules,
+    /match \/investmentRequests\/\{requestId\}[\s\S]*allow update: if isSignedIn\(\) &&[\s\S]*isAdmin\(\)/
+  );
+  assert.match(
+    rules,
+    /match \/userPlans\/\{userPlanId\}[\s\S]*allow get: if isSignedIn\(\) && isValidId\(userPlanId\) && \(resource == null \|\| existing\(\)\.uid == request\.auth\.uid \|\| isAdmin\(\)\);[\s\S]*allow create: if isSignedIn\(\) &&[\s\S]*isAdmin\(\)[\s\S]*allow update, delete: if false;/
+  );
+  assert.match(
+    rules,
+    /match \/userPayoutMethods\/\{methodId\}[\s\S]*allow get: if isSignedIn\(\) && isValidId\(methodId\) && \(resource == null \|\| existing\(\)\.uid == request\.auth\.uid \|\| isAdmin\(\)\);/
+  );
+  assert.match(
+    rules,
+    /match \/depositRequests\/\{depositId\}[\s\S]*allow get: if isSignedIn\(\) && isValidId\(depositId\) && \(resource == null \|\| existing\(\)\.uid == request\.auth\.uid \|\| isAdmin\(\)\);/
+  );
 });
+
 

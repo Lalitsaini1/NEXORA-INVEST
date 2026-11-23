@@ -76,6 +76,7 @@ service cloud.firestore {
           'status',
           'avatarUrl',
           'referredByCode',
+          'suspensionReason',
           'createdAt',
           'updatedAt'
         ]) &&
@@ -97,6 +98,10 @@ service cloud.firestore {
         (!('referredByCode' in data) || (
           data.referredByCode is string &&
           data.referredByCode.size() <= 20
+        )) &&
+        (!('suspensionReason' in data) || (
+          data.suspensionReason is string &&
+          data.suspensionReason.size() <= 300
         )) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
@@ -285,6 +290,68 @@ service cloud.firestore {
           (data.planId == 'PLAN_ENERGY_5000' && data.productName == 'Grid Storage Plan' && data.coinCost == 5000 && data.durationDays == 30 && data.totalRewardEntitlement == 6600)
         )
       );
+    }
+
+    function isValidInvestmentRequest(data) {
+      return data.keys().hasAll([
+          'requestId',
+          'uid',
+          'userId',
+          'planId',
+          'productName',
+          'planPriceInr',
+          'coinCost',
+          'durationDays',
+          'totalRewardEntitlement',
+          'acceptedTerms',
+          'idempotencyKey',
+          'status',
+          'paymentStatus',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'requestId',
+          'uid',
+          'userId',
+          'planId',
+          'productName',
+          'planPriceInr',
+          'coinCost',
+          'durationDays',
+          'totalRewardEntitlement',
+          'acceptedTerms',
+          'idempotencyKey',
+          'status',
+          'paymentStatus',
+          'activatedUserPlanId',
+          'coinTransactionId',
+          'verifiedByUid',
+          'failureReason',
+          'createdAt',
+          'updatedAt',
+          'activatedAt'
+        ]) &&
+        isValidId(data.requestId) &&
+        isValidId(data.uid) &&
+        data.userId is string && data.userId.size() >= 8 && data.userId.size() <= 16 && data.userId.matches('^NX[0-9]{6,10}$') &&
+        isValidId(data.planId) && data.planId.size() <= 64 &&
+        data.productName is string && data.productName.size() >= 2 && data.productName.size() <= 120 &&
+        data.planPriceInr is int && data.planPriceInr >= 1 && data.planPriceInr <= 100000000 &&
+        data.coinCost is int && data.coinCost >= 1 && data.coinCost <= 100000000 &&
+        data.durationDays is int && data.durationDays >= 1 && data.durationDays <= 365 &&
+        data.totalRewardEntitlement is int && data.totalRewardEntitlement >= 0 &&
+        data.acceptedTerms is bool &&
+        data.idempotencyKey is string && data.idempotencyKey.size() >= 4 && data.idempotencyKey.size() <= 128 && data.idempotencyKey.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.status in ['PENDING_VERIFICATION', 'ACTIVATED', 'REJECTED', 'FAILED'] &&
+        data.paymentStatus in ['PENDING', 'VERIFIED', 'INSUFFICIENT_BALANCE', 'FAILED'] &&
+        (!('activatedUserPlanId' in data) || isValidId(data.activatedUserPlanId)) &&
+        (!('coinTransactionId' in data) || isValidId(data.coinTransactionId)) &&
+        (!('verifiedByUid' in data) || isValidId(data.verifiedByUid)) &&
+        (!('failureReason' in data) || (data.failureReason is string && data.failureReason.size() <= 300)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp &&
+        (!('activatedAt' in data) || data.activatedAt is timestamp);
     }
 
     function isValidUpiAccount(data) {
@@ -914,7 +981,7 @@ service cloud.firestore {
     }
 
     // Segregated Virtual Coin & Eligible INR Wallets
-    // Admins may adjust or credit wallets; owners may ONLY atomically debit withdrawableBalanceInr inside a synchronized withdrawal transaction.
+    // Strict financial governance: regular users cannot directly edit balances; updates run only via backend Cloud Functions or verified Admins.
     match /coinWallets/{userId} {
       allow get: if isSignedIn() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
       allow list: if isAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
@@ -938,133 +1005,84 @@ service cloud.firestore {
 
       allow update: if isSignedIn() &&
         isValidId(userId) &&
+        isAdmin() &&
         isValidCoinWallet(incoming()) &&
         incoming().uid == existing().uid &&
         incoming().userId == existing().userId &&
-        incoming().updatedAt == request.time &&
-        (
-          isAdmin() ||
-          (
-            request.auth.uid == userId &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['withdrawableBalanceInr', 'lastWithdrawalRef', 'updatedAt']) &&
-            incoming().availableCoins == existing().availableCoins &&
-            incoming().purchasedCoins == existing().purchasedCoins &&
-            incoming().earnedCoins == existing().earnedCoins &&
-            incoming().coinsUsedForPlans == existing().coinsUsedForPlans &&
-            incoming().pendingTransactionCoins == existing().pendingTransactionCoins &&
-            incoming().withdrawableBalanceInr >= 0 &&
-            incoming().withdrawableBalanceInr < existing().withdrawableBalanceInr &&
-            'lastWithdrawalRef' in incoming() &&
-            isValidId(incoming().lastWithdrawalRef) &&
-            !exists(/databases/$(database)/documents/withdrawalRequests/$(incoming().lastWithdrawalRef)) &&
-            existsAfter(/databases/$(database)/documents/withdrawalRequests/$(incoming().lastWithdrawalRef)) &&
-            getAfter(/databases/$(database)/documents/withdrawalRequests/$(incoming().lastWithdrawalRef)).data.uid == request.auth.uid &&
-            getAfter(/databases/$(database)/documents/withdrawalRequests/$(incoming().lastWithdrawalRef)).data.status == 'PENDING' &&
-            getAfter(/databases/$(database)/documents/withdrawalRequests/$(incoming().lastWithdrawalRef)).data.amountInr == (existing().withdrawableBalanceInr - incoming().withdrawableBalanceInr) &&
-            existsAfter(/databases/$(database)/documents/coinTransactions/$('wtx_' + incoming().lastWithdrawalRef))
-          ) ||
-          (
-            request.auth.uid == userId &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['availableCoins', 'coinsUsedForPlans', 'lastPlanRef', 'updatedAt']) &&
-            incoming().purchasedCoins == existing().purchasedCoins &&
-            incoming().earnedCoins == existing().earnedCoins &&
-            incoming().pendingTransactionCoins == existing().pendingTransactionCoins &&
-            incoming().withdrawableBalanceInr == existing().withdrawableBalanceInr &&
-            incoming().availableCoins >= 0 &&
-            incoming().availableCoins < existing().availableCoins &&
-            incoming().coinsUsedForPlans == existing().coinsUsedForPlans + (existing().availableCoins - incoming().availableCoins) &&
-            'lastPlanRef' in incoming() &&
-            isValidId(incoming().lastPlanRef) &&
-            !exists(/databases/$(database)/documents/userPlans/$(incoming().lastPlanRef)) &&
-            existsAfter(/databases/$(database)/documents/userPlans/$(incoming().lastPlanRef)) &&
-            getAfter(/databases/$(database)/documents/userPlans/$(incoming().lastPlanRef)).data.uid == request.auth.uid &&
-            getAfter(/databases/$(database)/documents/userPlans/$(incoming().lastPlanRef)).data.status == 'ACTIVE' &&
-            getAfter(/databases/$(database)/documents/userPlans/$(incoming().lastPlanRef)).data.coinCost == (existing().availableCoins - incoming().availableCoins) &&
-            existsAfter(/databases/$(database)/documents/coinTransactions/$('ptx_' + incoming().lastPlanRef))
-          )
-        );
+        incoming().updatedAt == request.time;
 
       allow delete: if false;
     }
 
-    // Immutable Virtual Coin & INR Wallet Transaction Ledger
+    // Immutable Virtual Coin & INR Wallet Transaction Ledger (backend Cloud Functions / Admin only)
     match /coinTransactions/{transactionId} {
-      allow get: if isSignedIn() && isValidId(transactionId) && (existing().uid == request.auth.uid || isAdmin());
+      allow get: if isSignedIn() && isValidId(transactionId) && (resource == null || existing().uid == request.auth.uid || isAdmin());
       allow list: if isAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
       allow create: if isSignedIn() &&
         isValidId(transactionId) &&
+        isAdmin() &&
         isValidCoinTransaction(incoming()) &&
         incoming().transactionId == transactionId &&
         incoming().createdAt == request.time &&
-        !exists(/databases/$(database)/documents/coinTransactions/$(transactionId)) &&
-        (
-          isAdmin() ||
-          (
-            incoming().uid == request.auth.uid &&
-            incoming().type == 'WITHDRAWAL_REQUEST' &&
-            incoming().assetType == 'INR' &&
-            incoming().status == 'PENDING' &&
-            incoming().newBalance >= 0 &&
-            incoming().newBalance < incoming().previousBalance &&
-            incoming().amount == (incoming().newBalance - incoming().previousBalance) &&
-            isValidId(incoming().referenceId) &&
-            transactionId == ('wtx_' + incoming().referenceId) &&
-            existsAfter(/databases/$(database)/documents/withdrawalRequests/$(incoming().referenceId)) &&
-            getAfter(/databases/$(database)/documents/withdrawalRequests/$(incoming().referenceId)).data.uid == request.auth.uid &&
-            getAfter(/databases/$(database)/documents/withdrawalRequests/$(incoming().referenceId)).data.amountInr == (incoming().previousBalance - incoming().newBalance) &&
-            existsAfter(/databases/$(database)/documents/coinWallets/$(request.auth.uid)) &&
-            getAfter(/databases/$(database)/documents/coinWallets/$(request.auth.uid)).data.lastWithdrawalRef == incoming().referenceId
-          ) ||
-          (
-            incoming().uid == request.auth.uid &&
-            incoming().type == 'PLAN_INVESTMENT' &&
-            incoming().assetType == 'COINS' &&
-            incoming().status == 'COMPLETED' &&
-            incoming().newBalance >= 0 &&
-            incoming().newBalance < incoming().previousBalance &&
-            incoming().amount == (incoming().newBalance - incoming().previousBalance) &&
-            isValidId(incoming().referenceId) &&
-            transactionId == ('ptx_' + incoming().referenceId) &&
-            existsAfter(/databases/$(database)/documents/userPlans/$(incoming().referenceId)) &&
-            getAfter(/databases/$(database)/documents/userPlans/$(incoming().referenceId)).data.uid == request.auth.uid &&
-            getAfter(/databases/$(database)/documents/userPlans/$(incoming().referenceId)).data.coinCost == (incoming().previousBalance - incoming().newBalance) &&
-            existsAfter(/databases/$(database)/documents/coinWallets/$(request.auth.uid)) &&
-            getAfter(/databases/$(database)/documents/coinWallets/$(request.auth.uid)).data.lastPlanRef == incoming().referenceId
-          )
-        );
+        !exists(/databases/$(database)/documents/coinTransactions/$(transactionId));
       allow update, delete: if false;
     }
 
-    // Structured Plan Enrollments (Strictly gated behind ACTIVE member status, validated plan specs, and atomic coin deduction)
+    // Permitted Member Investment Requests (user creates strictly PENDING_VERIFICATION / PENDING; backend Cloud Function activates)
+    match /investmentRequests/{requestId} {
+      allow get: if isSignedIn() && isValidId(requestId) && (resource == null || existing().uid == request.auth.uid || isAdmin());
+      allow list: if isAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
+
+      allow create: if isSignedIn() &&
+        isValidId(requestId) &&
+        isValidInvestmentRequest(incoming()) &&
+        incoming().requestId == requestId &&
+        incoming().uid == request.auth.uid &&
+        incoming().status == 'PENDING_VERIFICATION' &&
+        incoming().paymentStatus == 'PENDING' &&
+        incoming().acceptedTerms == true &&
+        !('activatedUserPlanId' in incoming()) &&
+        !('coinTransactionId' in incoming()) &&
+        !('verifiedByUid' in incoming()) &&
+        !('failureReason' in incoming()) &&
+        !('activatedAt' in incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        !exists(/databases/$(database)/documents/investmentRequests/$(requestId)) &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status == 'ACTIVE' &&
+        isMatchingActiveCatalogOrPublishedPlan(incoming());
+
+      allow update: if isSignedIn() &&
+        isValidId(requestId) &&
+        isAdmin() &&
+        isValidInvestmentRequest(incoming()) &&
+        incoming().requestId == existing().requestId &&
+        incoming().uid == existing().uid &&
+        incoming().userId == existing().userId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time;
+
+      allow delete: if false;
+    }
+
+    // Structured Plan Enrollments (Activated exclusively after backend verification via Cloud Functions or Admin)
     match /userPlans/{userPlanId} {
-      allow get: if isSignedIn() && isValidId(userPlanId) && (existing().uid == request.auth.uid || isAdmin());
+      allow get: if isSignedIn() && isValidId(userPlanId) && (resource == null || existing().uid == request.auth.uid || isAdmin());
       allow list: if isAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
       allow create: if isSignedIn() &&
         isValidId(userPlanId) &&
+        isAdmin() &&
         isValidUserPlan(incoming()) &&
         incoming().userPlanId == userPlanId &&
-        incoming().uid == request.auth.uid &&
-        incoming().status == 'ACTIVE' &&
-        incoming().collectedReward == 0 &&
-        incoming().remainingReward == incoming().totalRewardEntitlement &&
-        incoming().daysCompleted == 0 &&
-        incoming().remainingDays == incoming().durationDays &&
         incoming().createdAt == request.time &&
-        !exists(/databases/$(database)/documents/userPlans/$(userPlanId)) &&
-        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status == 'ACTIVE' &&
-        isMatchingActiveCatalogOrPublishedPlan(incoming()) &&
-        exists(/databases/$(database)/documents/coinWallets/$(request.auth.uid)) &&
-        existsAfter(/databases/$(database)/documents/coinWallets/$(request.auth.uid)) &&
-        getAfter(/databases/$(database)/documents/coinWallets/$(request.auth.uid)).data.lastPlanRef == userPlanId &&
-        getAfter(/databases/$(database)/documents/coinWallets/$(request.auth.uid)).data.availableCoins == (get(/databases/$(database)/documents/coinWallets/$(request.auth.uid)).data.availableCoins - incoming().coinCost) &&
-        existsAfter(/databases/$(database)/documents/coinTransactions/$('ptx_' + userPlanId));
+        !exists(/databases/$(database)/documents/userPlans/$(userPlanId));
       allow update, delete: if false;
     }
 
     // Daily Reward Credit Records
     match /dailyRewards/{rewardId} {
-      allow get: if isSignedIn() && isValidId(rewardId) && (existing().uid == request.auth.uid || isAdmin());
+      allow get: if isSignedIn() && isValidId(rewardId) && (resource == null || existing().uid == request.auth.uid || isAdmin());
       allow list: if isAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
       allow create, update, delete: if false;
     }
@@ -1106,8 +1124,8 @@ service cloud.firestore {
     // PII-Free Referral Sign-up Attribution
     match /referrals/{referralId} {
       allow get: if isSignedIn() && isValidId(referralId) && (
-        existing().referrerUid == request.auth.uid ||
-        existing().referredUid == request.auth.uid ||
+        (resource == null && referralId == request.auth.uid) ||
+        (resource != null && (existing().referrerUid == request.auth.uid || existing().referredUid == request.auth.uid)) ||
         isAdmin()
       );
       allow list: if isAdmin() || (isSignedIn() && resource.data.referrerUid == request.auth.uid);
@@ -1128,7 +1146,7 @@ service cloud.firestore {
 
     // Member Security & Audit Activity Log (append-only)
     match /userActivityLogs/{logId} {
-      allow get: if isSignedIn() && isValidId(logId) && (existing().uid == request.auth.uid || isAdmin());
+      allow get: if isSignedIn() && isValidId(logId) && (resource == null || existing().uid == request.auth.uid || isAdmin());
       allow list: if isAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
       allow create: if isSignedIn() &&
         isValidId(logId) &&
@@ -1209,7 +1227,7 @@ service cloud.firestore {
 
     // Stage 3 Deposit Requests (strict 1:1 coin conversion parity or admin-verified active CoinPackage bonus, active UPI endpoint verification, terminal state locking)
     match /depositRequests/{depositId} {
-      allow get: if isSignedIn() && isValidId(depositId) && (existing().uid == request.auth.uid || isAdmin());
+      allow get: if isSignedIn() && isValidId(depositId) && (resource == null || existing().uid == request.auth.uid || isAdmin());
       allow list: if isAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
       allow create: if isSignedIn() &&
         isValidId(depositId) &&
@@ -1259,7 +1277,7 @@ service cloud.firestore {
 
     // Backend-Ready Idempotent Payment Transaction Lifecycle Tracking
     match /paymentTransactions/{paymentTxId} {
-      allow get: if isSignedIn() && isValidId(paymentTxId) && (existing().uid == request.auth.uid || isAdmin());
+      allow get: if isSignedIn() && isValidId(paymentTxId) && (resource == null || existing().uid == request.auth.uid || isAdmin());
       allow list: if isAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
 
       allow create: if isSignedIn() &&
@@ -1327,7 +1345,7 @@ service cloud.firestore {
 
     // Write-Once Deterministic Credit Locks (Prevents Duplicate Payment Credits Atomically)
     match /paymentCreditLocks/{lockId} {
-      allow get: if isSignedIn() && isValidId(lockId) && (existing().uid == request.auth.uid || isAdmin());
+      allow get: if isSignedIn() && isValidId(lockId) && (resource == null || existing().uid == request.auth.uid || isAdmin());
       allow list: if isAdmin();
       allow create: if isSignedIn() &&
         isValidId(lockId) &&
@@ -1356,7 +1374,7 @@ service cloud.firestore {
 
     // Owner-Isolated Member Payout Methods (UPI IDs & Masked Bank Accounts; self-verification blocked)
     match /userPayoutMethods/{methodId} {
-      allow get: if isSignedIn() && isValidId(methodId) && (existing().uid == request.auth.uid || isAdmin());
+      allow get: if isSignedIn() && isValidId(methodId) && (resource == null || existing().uid == request.auth.uid || isAdmin());
       allow list: if isAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
 
       allow create: if isSignedIn() &&
@@ -1417,34 +1435,19 @@ service cloud.firestore {
       allow delete: if isSignedIn() && isValidId(methodId) && (existing().uid == request.auth.uid || isAdmin());
     }
 
-    // Stage 3 + User Wallet Control Withdrawal Requests (atomic INR deduction + verified payout method + payoutsEnabled gate)
+    // Stage 3 + User Wallet Control Withdrawal Requests (processed atomically by backend Cloud Functions or verified Admin)
     match /withdrawalRequests/{withdrawalId} {
-      allow get: if isSignedIn() && isValidId(withdrawalId) && (existing().uid == request.auth.uid || isAdmin());
+      allow get: if isSignedIn() && isValidId(withdrawalId) && (resource == null || existing().uid == request.auth.uid || isAdmin());
       allow list: if isAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
 
       allow create: if isSignedIn() &&
         isValidId(withdrawalId) &&
+        isAdmin() &&
         isValidWithdrawalRequest(incoming()) &&
         incoming().withdrawalId == withdrawalId &&
-        incoming().uid == request.auth.uid &&
-        incoming().status == 'PENDING' &&
-        incoming().amountInr >= 100 &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
-        !('paidAt' in incoming()) &&
-        !exists(/databases/$(database)/documents/withdrawalRequests/$(withdrawalId)) &&
-        exists(/databases/$(database)/documents/platformSettings/global) &&
-        get(/databases/$(database)/documents/platformSettings/global).data.payoutsEnabled == true &&
-        'payoutMethodId' in incoming() &&
-        isValidId(incoming().payoutMethodId) &&
-        exists(/databases/$(database)/documents/userPayoutMethods/$(incoming().payoutMethodId)) &&
-        get(/databases/$(database)/documents/userPayoutMethods/$(incoming().payoutMethodId)).data.uid == request.auth.uid &&
-        get(/databases/$(database)/documents/userPayoutMethods/$(incoming().payoutMethodId)).data.verificationStatus == 'VERIFIED' &&
-        exists(/databases/$(database)/documents/coinWallets/$(request.auth.uid)) &&
-        existsAfter(/databases/$(database)/documents/coinWallets/$(request.auth.uid)) &&
-        getAfter(/databases/$(database)/documents/coinWallets/$(request.auth.uid)).data.lastWithdrawalRef == withdrawalId &&
-        getAfter(/databases/$(database)/documents/coinWallets/$(request.auth.uid)).data.withdrawableBalanceInr == (get(/databases/$(database)/documents/coinWallets/$(request.auth.uid)).data.withdrawableBalanceInr - incoming().amountInr) &&
-        existsAfter(/databases/$(database)/documents/coinTransactions/$('wtx_' + withdrawalId));
+        !exists(/databases/$(database)/documents/withdrawalRequests/$(withdrawalId));
 
       allow update: if isSignedIn() &&
         isValidId(withdrawalId) &&

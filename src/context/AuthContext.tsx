@@ -6,6 +6,7 @@ import { OperationType, auth, db, handleFirestoreError } from '../firebase/clien
 import { CoinWallet, UserProfile } from '../types/domain';
 import {
   ensureUserProfileOnLogin,
+  isAuthRegistrationInFlight,
   logoutUser,
   mapFirebaseError,
 } from '../services/authService';
@@ -150,10 +151,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           } else {
             profileRole = 'USER';
             setProfile(null);
-            if (!user.isAnonymous && !attemptedInitUidsRef.current.has(user.uid)) {
+            if (
+              !user.isAnonymous &&
+              !isAuthRegistrationInFlight() &&
+              !attemptedInitUidsRef.current.has(user.uid)
+            ) {
               attemptedInitUidsRef.current.add(user.uid);
               void runProfileInit(user);
-            } else {
+            } else if (!isAuthRegistrationInFlight()) {
               setAuthReady(true);
             }
           }
