@@ -1135,3 +1135,241 @@ function evaluateCatalogOrPublishedPlanCondition(
       'Align payload fields with the built-in catalog values or publish the authoritative plan document in Firestore /productPlans/{planId}.',
   });
 }
+
+export type WriteAttemptOutcome =
+  | 'WRITE_SUCCEEDED'
+  | 'WRITE_DENIED_BY_RULES'
+  | 'WRITE_FAILED_OTHER';
+
+export interface ExactPermissionFailure {
+  conditionId: string;
+  ruleExpression: string;
+  firestoreRulesLocation: string;
+  expected: string;
+  actual: string;
+  reason: string;
+  remediation: string;
+}
+
+export interface InvestmentRequestWriteAttemptLogEntry {
+  loggedAt: string;
+  outcome: WriteAttemptOutcome;
+  operation: RuleDiagnosticOperation;
+  databaseId: string;
+  path: string;
+  requestId: string;
+  firestoreErrorCode: string | null;
+  firestoreErrorMessage: string | null;
+  isPermissionDenied: boolean;
+  ruleEvaluationAllowed: boolean;
+  exactPermissionFailure: ExactPermissionFailure | null;
+  allFailedConditions: DiagnosticConditionResult[];
+  passedConditionIds: string[];
+  summary: string;
+  deploymentDriftSuspected: boolean;
+  deploymentDriftNote: string;
+  readErrors: Record<string, string>;
+}
+
+export interface DiagnosticLogger {
+  info?: (message?: unknown, ...optionalParams: unknown[]) => void;
+  error?: (message?: unknown, ...optionalParams: unknown[]) => void;
+}
+
+const MAX_LOG_HISTORY = 25;
+const writeEvaluationLogHistory: InvestmentRequestWriteAttemptLogEntry[] = [];
+
+export function extractFirestoreWriteErrorDetails(error: unknown): {
+  code: string | null;
+  message: string | null;
+  isPermissionDenied: boolean;
+} {
+  if (error === undefined || error === null) {
+    return { code: null, message: null, isPermissionDenied: false };
+  }
+
+  let code: string | null = null;
+  let message: string | null = null;
+
+  if (typeof error === 'object') {
+    const record = error as { code?: unknown; message?: unknown };
+    if (typeof record.code === 'string' && record.code.trim()) {
+      code = record.code.trim();
+    }
+    if (typeof record.message === 'string' && record.message.trim()) {
+      message = record.message.trim();
+    }
+  } else if (typeof error === 'string' && error.trim()) {
+    message = error.trim();
+  } else {
+    message = String(error);
+  }
+
+  if (!message && error instanceof Error) {
+    message = error.message || error.name;
+  }
+
+  const normalizedCode = (code || '').toLowerCase();
+  const normalizedMsg = (message || '').toLowerCase();
+  const isPermissionDenied =
+    normalizedCode === 'permission-denied' ||
+    normalizedCode.endsWith('/permission-denied') ||
+    normalizedMsg.includes('missing or insufficient permissions') ||
+    normalizedMsg.includes('permission-denied') ||
+    normalizedMsg.includes('permission_denied');
+
+  return { code, message, isPermissionDenied };
+}
+
+function toExactPermissionFailure(
+  condition: DiagnosticConditionResult
+): ExactPermissionFailure {
+  return {
+    conditionId: condition.id,
+    ruleExpression: condition.ruleExpression,
+    firestoreRulesLocation: condition.firestoreRulesLocation,
+    expected: condition.expected,
+    actual: condition.actual,
+    reason: condition.reason,
+    remediation: condition.remediation,
+  };
+}
+
+export function buildInvestmentRequestWriteAttemptLogEntry(params: {
+  report: InvestmentRequestRuleDiagnosticReport;
+  error?: unknown;
+  readErrors?: Record<string, string>;
+  loggedAt?: string;
+}): InvestmentRequestWriteAttemptLogEntry {
+  const { report, error, readErrors = {}, loggedAt = new Date().toISOString() } = params;
+  const errDetails = extractFirestoreWriteErrorDetails(error);
+  const hasError = error !== undefined && error !== null;
+
+  let outcome: WriteAttemptOutcome = 'WRITE_SUCCEEDED';
+  if (hasError) {
+    outcome =
+      errDetails.isPermissionDenied || !report.allowed
+        ? 'WRITE_DENIED_BY_RULES'
+        : 'WRITE_FAILED_OTHER';
+  }
+
+  let exactPermissionFailure: ExactPermissionFailure | null = report.firstDenyingCondition
+    ? toExactPermissionFailure(report.firstDenyingCondition)
+    : null;
+
+  const deploymentDriftSuspected = Boolean(
+    hasError && errDetails.isPermissionDenied && report.allowed
+  );
+
+  if (deploymentDriftSuspected && !exactPermissionFailure) {
+    exactPermissionFailure = {
+      conditionId: 'deployment_drift_or_live_rules_mismatch',
+      ruleExpression: 'live deployed firestore.rules != local firestore.rules',
+      firestoreRulesLocation: 'firestore.rules:1033-1069',
+      expected: `Live rules on database '${report.databaseId}' synchronized with local firestore.rules`,
+      actual:
+        errDetails.message ||
+        errDetails.code ||
+        'Firestore rejected write with permission-denied despite passing all local rule checks',
+      reason:
+        report.deploymentDriftNote ||
+        `All ${report.passedConditions.length} local rule conditions passed, yet Firestore returned permission-denied — deployed rules are likely out of sync with local firestore.rules.`,
+      remediation:
+        'Deploy updated firestore.rules to the target Firestore database and verify Cloud Functions availability.',
+    };
+  }
+
+  let summary = report.summary;
+  if (outcome === 'WRITE_SUCCEEDED') {
+    summary = `SUCCEEDED (${report.operation} on ${report.collectionPath}): Write accepted and all ${report.passedConditions.length} rule conditions passed.`;
+  } else if (outcome === 'WRITE_DENIED_BY_RULES' && exactPermissionFailure) {
+    summary = `DENIED (${report.operation} on ${report.collectionPath}) [${errDetails.code || 'permission-denied'}]: Exact failure [${exactPermissionFailure.conditionId}] — ${exactPermissionFailure.reason}`;
+  } else if (outcome === 'WRITE_FAILED_OTHER') {
+    summary = `FAILED (${report.operation} on ${report.collectionPath}) [${errDetails.code || 'unknown'}]: ${errDetails.message || 'Write failed due to non-permission error.'}`;
+  }
+
+  return {
+    loggedAt,
+    outcome,
+    operation: report.operation,
+    databaseId: report.databaseId,
+    path: report.collectionPath,
+    requestId: report.collectionPath.replace(/^investmentRequests\//, ''),
+    firestoreErrorCode: errDetails.code,
+    firestoreErrorMessage: errDetails.message,
+    isPermissionDenied: errDetails.isPermissionDenied,
+    ruleEvaluationAllowed: report.allowed,
+    exactPermissionFailure,
+    allFailedConditions: report.failedConditions,
+    passedConditionIds: report.passedConditions.map((c) => c.id),
+    summary,
+    deploymentDriftSuspected,
+    deploymentDriftNote: report.deploymentDriftNote,
+    readErrors,
+  };
+}
+
+export function logInvestmentRequestRuleEvaluation(
+  entry: InvestmentRequestWriteAttemptLogEntry,
+  logger: DiagnosticLogger = console
+): InvestmentRequestWriteAttemptLogEntry {
+  writeEvaluationLogHistory.push(entry);
+  if (writeEvaluationLogHistory.length > MAX_LOG_HISTORY) {
+    writeEvaluationLogHistory.splice(0, writeEvaluationLogHistory.length - MAX_LOG_HISTORY);
+  }
+
+  if (typeof globalThis !== 'undefined') {
+    const globalObj = globalThis as Record<string, unknown>;
+    globalObj.__NEXORA_INVESTMENT_RULE_EVAL_LOGS__ = [...writeEvaluationLogHistory];
+  }
+
+  const logDetails = {
+    loggedAt: entry.loggedAt,
+    outcome: entry.outcome,
+    operation: entry.operation,
+    databaseId: entry.databaseId,
+    path: entry.path,
+    firestoreErrorCode: entry.firestoreErrorCode,
+    firestoreErrorMessage: entry.firestoreErrorMessage,
+    exactPermissionFailure: entry.exactPermissionFailure,
+    failedConditionCount: entry.allFailedConditions.length,
+    failedConditions: entry.allFailedConditions.map((c) => ({
+      id: c.id,
+      location: c.firestoreRulesLocation,
+      ruleExpression: c.ruleExpression,
+      expected: c.expected,
+      actual: c.actual,
+      reason: c.reason,
+      remediation: c.remediation,
+    })),
+    deploymentDriftSuspected: entry.deploymentDriftSuspected,
+    deploymentDriftNote: entry.deploymentDriftNote || undefined,
+    readErrors: Object.keys(entry.readErrors).length ? entry.readErrors : undefined,
+  };
+
+  if (entry.outcome === 'WRITE_SUCCEEDED') {
+    logger.info?.(`[Firestore Rule Evaluation] ${entry.summary}`, logDetails);
+  } else {
+    logger.error?.(`[Firestore Rule Evaluation] ${entry.summary}`, logDetails);
+  }
+
+  return entry;
+}
+
+export function getRecentInvestmentRequestWriteLogs(): readonly InvestmentRequestWriteAttemptLogEntry[] {
+  return [...writeEvaluationLogHistory];
+}
+
+export function getLastInvestmentRequestWriteLog(): InvestmentRequestWriteAttemptLogEntry | null {
+  return writeEvaluationLogHistory.length > 0
+    ? writeEvaluationLogHistory[writeEvaluationLogHistory.length - 1]
+    : null;
+}
+
+export function clearInvestmentRequestWriteLogs(): void {
+  writeEvaluationLogHistory.length = 0;
+  if (typeof globalThis !== 'undefined') {
+    const globalObj = globalThis as Record<string, unknown>;
+    globalObj.__NEXORA_INVESTMENT_RULE_EVAL_LOGS__ = [];
+  }
+}

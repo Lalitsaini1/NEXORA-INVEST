@@ -5,9 +5,15 @@ import { ILLUSTRATIVE_PLANS } from '../../data/catalogPreview';
 import { SUPER_ADMIN_UID } from '../../config/constants';
 import {
   buildExpectedInvestmentRequestPayload,
+  buildInvestmentRequestWriteAttemptLogEntry,
+  clearInvestmentRequestWriteLogs,
   DEFAULT_DIAGNOSTIC_DATABASE_ID,
   diagnoseInvestmentRequestRules,
+  extractFirestoreWriteErrorDetails,
+  getLastInvestmentRequestWriteLog,
+  getRecentInvestmentRequestWriteLogs,
   InvestmentRequestAuthContext,
+  logInvestmentRequestRuleEvaluation,
 } from '../investmentRulesDiagnostic';
 
 const ACTIVE_MEMBER_AUTH: InvestmentRequestAuthContext = {
@@ -372,5 +378,123 @@ describe('diagnoseInvestmentRequestRules', () => {
     });
     assert.equal(deleteReport.allowed, false);
     assert.equal(deleteReport.firstDenyingCondition?.id, 'delete_unconditionally_denied');
+  });
+});
+
+describe('write-attempt rule evaluation logger', () => {
+  it('extracts Firestore permission-denied codes and messages accurately', () => {
+    const firebasePermErr = {
+      code: 'permission-denied',
+      message: '7 PERMISSION_DENIED: Missing or insufficient permissions.',
+    };
+    assert.deepEqual(extractFirestoreWriteErrorDetails(firebasePermErr), {
+      code: 'permission-denied',
+      message: '7 PERMISSION_DENIED: Missing or insufficient permissions.',
+      isPermissionDenied: true,
+    });
+
+    const networkErr = { code: 'unavailable', message: 'Network timeout' };
+    assert.deepEqual(extractFirestoreWriteErrorDetails(networkErr), {
+      code: 'unavailable',
+      message: 'Network timeout',
+      isPermissionDenied: false,
+    });
+  });
+
+  it('captures exact failing permission check and logs error details on denied write attempts', () => {
+    clearInvestmentRequestWriteLogs();
+    const requestId = 'invreq_write_deny_001';
+    const payload = buildExpectedInvestmentRequestPayload({
+      requestId,
+      uid: 'member_uid_123',
+      userId: 'NX100042',
+      plan: ILLUSTRATIVE_PLANS[0],
+      acceptedTerms: true,
+      createdAtSentinel: serverTimestamp(),
+      updatedAtSentinel: serverTimestamp(),
+    });
+
+    const report = diagnoseInvestmentRequestRules({
+      operation: 'create',
+      requestId,
+      auth: ACTIVE_MEMBER_AUTH,
+      incomingData: payload,
+      userProfileDoc: { ...ACTIVE_MEMBER_PROFILE, status: 'SUSPENDED' },
+      productPlanDoc: null,
+      existingRequestDoc: null,
+    });
+
+    const entry = buildInvestmentRequestWriteAttemptLogEntry({
+      report,
+      error: {
+        code: 'permission-denied',
+        message: 'Missing or insufficient permissions.',
+      },
+    });
+
+    assert.equal(entry.outcome, 'WRITE_DENIED_BY_RULES');
+    assert.equal(entry.isPermissionDenied, true);
+    assert.equal(entry.deploymentDriftSuspected, false);
+    assert.equal(entry.exactPermissionFailure?.conditionId, 'create_user_status_active');
+    assert.match(entry.summary, /create_user_status_active/);
+
+    const loggedErrors: unknown[][] = [];
+    logInvestmentRequestRuleEvaluation(entry, {
+      error: (...args: unknown[]) => loggedErrors.push(args),
+    });
+
+    assert.equal(loggedErrors.length, 1);
+    assert.match(String(loggedErrors[0][0]), /create_user_status_active/);
+    assert.equal(getLastInvestmentRequestWriteLog()?.requestId, requestId);
+    assert.equal(getRecentInvestmentRequestWriteLogs().length, 1);
+  });
+
+  it('detects live rules deployment drift when local rules pass but Firestore rejects with permission-denied', () => {
+    clearInvestmentRequestWriteLogs();
+    const requestId = 'invreq_drift_001';
+    const payload = buildExpectedInvestmentRequestPayload({
+      requestId,
+      uid: 'member_uid_123',
+      userId: 'NX100042',
+      plan: ILLUSTRATIVE_PLANS[0],
+      acceptedTerms: true,
+      createdAtSentinel: serverTimestamp(),
+      updatedAtSentinel: serverTimestamp(),
+    });
+
+    const report = diagnoseInvestmentRequestRules({
+      operation: 'create',
+      requestId,
+      auth: ACTIVE_MEMBER_AUTH,
+      incomingData: payload,
+      userProfileDoc: ACTIVE_MEMBER_PROFILE,
+      productPlanDoc: null,
+      existingRequestDoc: null,
+    });
+
+    const entry = buildInvestmentRequestWriteAttemptLogEntry({
+      report,
+      error: {
+        code: 'permission-denied',
+        message: 'Missing or insufficient permissions.',
+      },
+    });
+
+    assert.equal(entry.outcome, 'WRITE_DENIED_BY_RULES');
+    assert.equal(entry.ruleEvaluationAllowed, true);
+    assert.equal(entry.deploymentDriftSuspected, true);
+    assert.equal(
+      entry.exactPermissionFailure?.conditionId,
+      'deployment_drift_or_live_rules_mismatch'
+    );
+    assert.match(entry.summary, /deployment_drift_or_live_rules_mismatch/);
+
+    const loggedInfos: unknown[][] = [];
+    const successEntry = buildInvestmentRequestWriteAttemptLogEntry({ report });
+    logInvestmentRequestRuleEvaluation(successEntry, {
+      info: (...args: unknown[]) => loggedInfos.push(args),
+    });
+    assert.equal(successEntry.outcome, 'WRITE_SUCCEEDED');
+    assert.equal(loggedInfos.length, 1);
   });
 });

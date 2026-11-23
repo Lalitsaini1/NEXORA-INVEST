@@ -16,6 +16,7 @@ import { OperationType, auth, db, functions, handleFirestoreError } from '../fir
 import { InvestmentRequest, ProductPlan, UserPlan } from '../types/domain';
 import { InvestmentStageError } from '../utils/planErrorFormatter';
 import { evaluatePlanInvestmentEligibility } from '../utils/planInvestment';
+import { attemptLoggedInvestmentRequestWrite } from './investmentDiagnosticService';
 
 function toIso(raw: unknown): string {
   if (
@@ -360,23 +361,31 @@ export async function investInProductPlan(params: {
     // (PENDING_VERIFICATION / PENDING only; zero balance or activation mutation allowed).
     creationMode = 'FIRESTORE_RULES_FALLBACK';
     const reqRef = doc(db, 'investmentRequests', requestId);
+    const fallbackPayload: Record<string, unknown> = {
+      requestId,
+      uid: cleanUid,
+      userId: cleanUserId,
+      planId: authoritativePlan.planId,
+      productName: authoritativePlan.productName.slice(0, 120),
+      planPriceInr: expectedPlanPriceInr,
+      coinCost: expectedCoinCost,
+      durationDays: Math.max(1, Math.round(authoritativePlan.durationDays)),
+      totalRewardEntitlement: Math.max(0, Math.round(authoritativePlan.totalCoinReward)),
+      acceptedTerms: true,
+      idempotencyKey,
+      status: 'PENDING_VERIFICATION',
+      paymentStatus: 'PENDING',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    };
     try {
-      await setDoc(reqRef, {
+      await attemptLoggedInvestmentRequestWrite({
+        operation: 'create',
         requestId,
+        payload: fallbackPayload,
         uid: cleanUid,
-        userId: cleanUserId,
         planId: authoritativePlan.planId,
-        productName: authoritativePlan.productName.slice(0, 120),
-        planPriceInr: expectedPlanPriceInr,
-        coinCost: expectedCoinCost,
-        durationDays: Math.max(1, Math.round(authoritativePlan.durationDays)),
-        totalRewardEntitlement: Math.max(0, Math.round(authoritativePlan.totalCoinReward)),
-        acceptedTerms: true,
-        idempotencyKey,
-        status: 'PENDING_VERIFICATION',
-        paymentStatus: 'PENDING',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
+        executeWrite: () => setDoc(reqRef, fallbackPayload),
       });
     } catch (writeErr) {
       handleFirestoreError(writeErr, OperationType.WRITE, `investmentRequests/${requestId}`);
