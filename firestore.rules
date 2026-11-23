@@ -497,6 +497,10 @@ service cloud.firestore {
           'screenshotUrl',
           'status',
           'rejectionReason',
+          'verificationChannel',
+          'externalTransactionId',
+          'settlementReference',
+          'reconciledAmountInr',
           'createdAt',
           'verifiedAt',
           'verifiedByAdminUid'
@@ -518,6 +522,10 @@ service cloud.firestore {
         (!('screenshotUrl' in data) || (data.screenshotUrl is string && data.screenshotUrl.size() <= 500)) &&
         data.status in ['PENDING', 'UNDER_REVIEW', 'APPROVED', 'REJECTED'] &&
         (!('rejectionReason' in data) || (data.rejectionReason is string && data.rejectionReason.size() <= 300)) &&
+        (!('verificationChannel' in data) || data.verificationChannel in ['BANK_STATEMENT', 'GATEWAY_SETTLEMENT', 'GATEWAY_WEBHOOK']) &&
+        (!('externalTransactionId' in data) || (data.externalTransactionId is string && data.externalTransactionId.size() >= 6 && data.externalTransactionId.size() <= 64 && data.externalTransactionId.matches('^[A-Za-z0-9_.:/\\-]+$'))) &&
+        (!('settlementReference' in data) || (data.settlementReference is string && data.settlementReference.size() >= 4 && data.settlementReference.size() <= 120)) &&
+        (!('reconciledAmountInr' in data) || (data.reconciledAmountInr is int && data.reconciledAmountInr == data.amountInr)) &&
         (!('verifiedAt' in data) || data.verifiedAt is timestamp) &&
         (!('verifiedByAdminUid' in data) || isValidId(data.verifiedByAdminUid)) &&
         data.createdAt is timestamp;
@@ -1238,6 +1246,10 @@ service cloud.firestore {
         incoming().uid == request.auth.uid &&
         incoming().status == 'PENDING' &&
         !('rejectionReason' in incoming()) &&
+        !('verificationChannel' in incoming()) &&
+        !('externalTransactionId' in incoming()) &&
+        !('settlementReference' in incoming()) &&
+        !('reconciledAmountInr' in incoming()) &&
         !('verifiedAt' in incoming()) &&
         !('verifiedByAdminUid' in incoming()) &&
         incoming().createdAt == request.time &&
@@ -1273,7 +1285,27 @@ service cloud.firestore {
         incoming().coinsRequested == existing().coinsRequested &&
         incoming().createdAt == existing().createdAt &&
         existing().status in ['PENDING', 'UNDER_REVIEW'] &&
-        isAdmin();
+        isAdmin() &&
+        (
+          incoming().status != 'APPROVED' ||
+          (
+            'verificationChannel' in incoming() &&
+            incoming().verificationChannel in ['BANK_STATEMENT', 'GATEWAY_SETTLEMENT', 'GATEWAY_WEBHOOK'] &&
+            'externalTransactionId' in incoming() &&
+            'settlementReference' in incoming() &&
+            'reconciledAmountInr' in incoming() &&
+            incoming().reconciledAmountInr == existing().amountInr &&
+            incoming().verifiedByAdminUid == request.auth.uid &&
+            incoming().verifiedAt == request.time
+          )
+        ) &&
+        (
+          incoming().status != 'REJECTED' ||
+          (
+            incoming().verifiedByAdminUid == request.auth.uid &&
+            incoming().verifiedAt == request.time
+          )
+        );
       allow delete: if false;
     }
 

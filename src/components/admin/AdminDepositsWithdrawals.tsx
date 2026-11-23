@@ -1,5 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowDownLeft, ArrowUpRight, CheckCircle2, Search, ShieldCheck, XCircle } from 'lucide-react';
+import {
+  ArrowDownLeft,
+  ArrowUpRight,
+  CheckCircle2,
+  Landmark,
+  Search,
+  ShieldAlert,
+  ShieldCheck,
+  XCircle,
+} from 'lucide-react';
 import {
   AdminActorContext,
   reviewDepositRequest,
@@ -19,6 +28,11 @@ import {
   WithdrawalRequest,
   WithdrawalStatus,
 } from '../../types/domain';
+import { formatAdminActionError } from '../../utils/cloudFunctionErrorFormatter';
+import {
+  DepositVerificationChannel,
+  validateDepositApprovalRequirements,
+} from '../../utils/depositVerification';
 import { formatCoins, formatDateTimeInr, formatInr } from '../../utils/formatters';
 import { maskBankAccountNumber, maskUpiId } from '../../utils/walletControl';
 import { PaymentTransactionsPanel } from './PaymentTransactionsPanel';
@@ -46,6 +60,14 @@ export function AdminDepositsWithdrawals({ actor }: AdminDepositsWithdrawalsProp
   const [depositStatusFilter, setDepositStatusFilter] = useState<'ALL' | DepositStatus>('ALL');
   const [withdrawalStatusFilter, setWithdrawalStatusFilter] = useState<'ALL' | WithdrawalStatus>('ALL');
   const [payoutStatusFilter, setPayoutStatusFilter] = useState<'ALL' | PayoutVerificationStatus>('ALL');
+
+  const [approvingDeposit, setApprovingDeposit] = useState<DepositRequest | null>(null);
+  const [verificationChannel, setVerificationChannel] =
+    useState<'BANK_STATEMENT' | 'GATEWAY_SETTLEMENT'>('BANK_STATEMENT');
+  const [externalTransactionId, setExternalTransactionId] = useState('');
+  const [settlementReference, setSettlementReference] = useState('');
+  const [reconciledAmountInr, setReconciledAmountInr] = useState('');
+
   const [rejectingDeposit, setRejectingDeposit] = useState<DepositRequest | null>(null);
   const [rejectionReason, setRejectionReason] = useState('');
 
@@ -56,7 +78,7 @@ export function AdminDepositsWithdrawals({ actor }: AdminDepositsWithdrawalsProp
         setLoadingDeposits(false);
       },
       (msg) => {
-        setErrorMsg(msg);
+        setErrorMsg((prev) => prev || msg);
         setLoadingDeposits(false);
       }
     );
@@ -66,7 +88,7 @@ export function AdminDepositsWithdrawals({ actor }: AdminDepositsWithdrawalsProp
         setLoadingWithdrawals(false);
       },
       (msg) => {
-        setErrorMsg(msg);
+        setErrorMsg((prev) => prev || msg);
         setLoadingWithdrawals(false);
       }
     );
@@ -76,7 +98,7 @@ export function AdminDepositsWithdrawals({ actor }: AdminDepositsWithdrawalsProp
         setLoadingPayoutMethods(false);
       },
       (msg) => {
-        setErrorMsg(msg);
+        setErrorMsg((prev) => prev || msg);
         setLoadingPayoutMethods(false);
       }
     );
@@ -100,6 +122,18 @@ export function AdminDepositsWithdrawals({ actor }: AdminDepositsWithdrawalsProp
     return map;
   }, [users]);
 
+  const depositSummary = useMemo(() => {
+    let pending = 0;
+    let approved = 0;
+    let rejected = 0;
+    for (const d of deposits) {
+      if (d.status === 'APPROVED') approved += 1;
+      else if (d.status === 'REJECTED') rejected += 1;
+      else pending += 1;
+    }
+    return { pending, approved, rejected };
+  }, [deposits]);
+
   const filteredDeposits = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return deposits.filter((dep) => {
@@ -111,6 +145,8 @@ export function AdminDepositsWithdrawals({ actor }: AdminDepositsWithdrawalsProp
         dep.depositId.toLowerCase().includes(q) ||
         dep.assignedUpiId.toLowerCase().includes(q) ||
         (dep.utrNumber || '').toLowerCase().includes(q) ||
+        (dep.externalTransactionId || '').toLowerCase().includes(q) ||
+        (dep.settlementReference || '').toLowerCase().includes(q) ||
         (owner?.email || '').toLowerCase().includes(q) ||
         (owner?.fullName || '').toLowerCase().includes(q)
       );
@@ -133,11 +169,71 @@ export function AdminDepositsWithdrawals({ actor }: AdminDepositsWithdrawalsProp
     });
   }, [withdrawals, withdrawalStatusFilter, searchQuery, userByUid]);
 
-  const handleReviewDeposit = async (
-    deposit: DepositRequest,
-    decision: 'APPROVED' | 'REJECTED',
-    reason?: string
-  ) => {
+  const openApprovalVerificationForm = (deposit: DepositRequest) => {
+    setErrorMsg(null);
+    setNoticeMsg(null);
+    setRejectingDeposit(null);
+    setRejectionReason('');
+    setApprovingDeposit(deposit);
+    setVerificationChannel('BANK_STATEMENT');
+    setExternalTransactionId('');
+    setSettlementReference('');
+    setReconciledAmountInr(String(deposit.amountInr));
+  };
+
+  const resetApprovalForm = () => {
+    setApprovingDeposit(null);
+    setExternalTransactionId('');
+    setSettlementReference('');
+    setReconciledAmountInr('');
+  };
+
+  const handleConfirmDepositApproval = async (deposit: DepositRequest) => {
+    setErrorMsg(null);
+    setNoticeMsg(null);
+    setBusyId(deposit.depositId);
+    try {
+      const parsedAmount = Math.round(Number(reconciledAmountInr));
+      const proof = {
+        verificationChannel: verificationChannel as Extract<
+          DepositVerificationChannel,
+          'BANK_STATEMENT' | 'GATEWAY_SETTLEMENT'
+        >,
+        externalTransactionId: externalTransactionId.trim(),
+        settlementReference: settlementReference.trim(),
+        reconciledAmountInr: parsedAmount,
+      };
+
+      // Validate locally first for immediate, crisp feedback
+      validateDepositApprovalRequirements({
+        deposit,
+        settlementProof: proof,
+      });
+
+      await reviewDepositRequest({
+        actor,
+        deposit,
+        decision: 'APPROVED',
+        settlementProof: proof,
+      });
+
+      resetApprovalForm();
+      setNoticeMsg(
+        `Deposit ${deposit.depositId} verified via ${proof.verificationChannel} (${proof.externalTransactionId}) and credited ${formatCoins(deposit.coinsRequested)} to ${deposit.userId}.`
+      );
+    } catch (err) {
+      setErrorMsg(
+        formatAdminActionError(
+          err,
+          'Unable to verify and credit deposit. Check payment reference and retry.'
+        )
+      );
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleRejectDeposit = async (deposit: DepositRequest, reason: string) => {
     setErrorMsg(null);
     setNoticeMsg(null);
     setBusyId(deposit.depositId);
@@ -145,16 +241,16 @@ export function AdminDepositsWithdrawals({ actor }: AdminDepositsWithdrawalsProp
       await reviewDepositRequest({
         actor,
         deposit,
-        decision,
+        decision: 'REJECTED',
         rejectionReason: reason,
       });
       if (rejectingDeposit?.depositId === deposit.depositId) {
         setRejectingDeposit(null);
         setRejectionReason('');
       }
-      setNoticeMsg(`Deposit ${deposit.depositId} marked ${decision}.`);
+      setNoticeMsg(`Deposit ${deposit.depositId} marked REJECTED.`);
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Unable to review deposit.');
+      setErrorMsg(formatAdminActionError(err, 'Unable to reject deposit request.'));
     } finally {
       setBusyId(null);
     }
@@ -191,7 +287,7 @@ export function AdminDepositsWithdrawals({ actor }: AdminDepositsWithdrawalsProp
       await reviewWithdrawalRequest({ actor, withdrawal, nextStatus });
       setNoticeMsg(`Withdrawal ${withdrawal.withdrawalId} marked ${nextStatus}.`);
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Unable to review withdrawal.');
+      setErrorMsg(formatAdminActionError(err, 'Unable to review withdrawal request.'));
     } finally {
       setBusyId(null);
     }
@@ -208,7 +304,7 @@ export function AdminDepositsWithdrawals({ actor }: AdminDepositsWithdrawalsProp
       await reviewUserPayoutMethod({ actor, method, decision });
       setNoticeMsg(`Payout method "${method.label}" (${method.userId}) marked ${decision}.`);
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Unable to review payout method.');
+      setErrorMsg(formatAdminActionError(err, 'Unable to review payout method.'));
     } finally {
       setBusyId(null);
     }
@@ -229,12 +325,12 @@ export function AdminDepositsWithdrawals({ actor }: AdminDepositsWithdrawalsProp
               Deposit &amp; Withdrawal Review Queue
             </h2>
             <p className="text-xs text-slate-500">
-              Approve verified UPI deposits to credit member wallets or finalize/refund withdrawal
-              requests atomically.
+              Verify deposits against bank settlement or payment gateway records before crediting
+              member coin wallets, or finalize/refund withdrawals atomically.
             </p>
           </div>
 
-          <div className="inline-flex items-center gap-1 p-1 bg-slate-100 rounded-lg self-start">
+          <div className="inline-flex flex-wrap items-center gap-1 p-1 bg-slate-100 rounded-lg self-start">
             <button
               type="button"
               onClick={() => setSubTab('DEPOSITS')}
@@ -296,24 +392,33 @@ export function AdminDepositsWithdrawals({ actor }: AdminDepositsWithdrawalsProp
               type="search"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search by NX User ID, member email, UTR ref, UPI ID, or order ID"
+              placeholder="Search by NX User ID, member email, UTR/Bank ref, UPI ID, or order ID"
               className="w-full pl-8 pr-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:bg-white focus:border-[#0B1A30]"
             />
           </div>
 
           {subTab === 'DEPOSITS' ? (
-            <select
-              aria-label="Filter deposits by status"
-              value={depositStatusFilter}
-              onChange={(e) => setDepositStatusFilter(e.target.value as 'ALL' | DepositStatus)}
-              className="px-3 py-2 text-xs font-semibold text-[#0B1A30] bg-slate-50 border border-slate-300 rounded-lg cursor-pointer"
-            >
-              <option value="ALL">All Deposit Statuses</option>
-              <option value="PENDING">Pending</option>
-              <option value="UNDER_REVIEW">Under Review</option>
-              <option value="APPROVED">Approved</option>
-              <option value="REJECTED">Rejected</option>
-            </select>
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-2 text-[11px] font-semibold text-slate-600">
+                <span>Pending: {depositSummary.pending}</span>
+                <span>·</span>
+                <span className="text-emerald-700">Approved: {depositSummary.approved}</span>
+                <span>·</span>
+                <span className="text-red-700">Rejected: {depositSummary.rejected}</span>
+              </div>
+              <select
+                aria-label="Filter deposits by status"
+                value={depositStatusFilter}
+                onChange={(e) => setDepositStatusFilter(e.target.value as 'ALL' | DepositStatus)}
+                className="px-3 py-2 text-xs font-semibold text-[#0B1A30] bg-slate-50 border border-slate-300 rounded-lg cursor-pointer"
+              >
+                <option value="ALL">All Deposit Statuses</option>
+                <option value="PENDING">Pending</option>
+                <option value="UNDER_REVIEW">Under Review</option>
+                <option value="APPROVED">Approved</option>
+                <option value="REJECTED">Rejected</option>
+              </select>
+            </div>
           ) : subTab === 'PAYOUT_METHODS' ? (
             <select
               aria-label="Filter payout methods by verification status"
@@ -328,7 +433,7 @@ export function AdminDepositsWithdrawals({ actor }: AdminDepositsWithdrawalsProp
               <option value="VERIFIED">Verified</option>
               <option value="REJECTED">Rejected</option>
             </select>
-          ) : (
+          ) : subTab === 'WITHDRAWALS' ? (
             <select
               aria-label="Filter withdrawals by status"
               value={withdrawalStatusFilter}
@@ -346,24 +451,176 @@ export function AdminDepositsWithdrawals({ actor }: AdminDepositsWithdrawalsProp
               <option value="PAID">Paid</option>
               <option value="REJECTED">Rejected</option>
             </select>
+          ) : (
+            <div className="text-[11px] font-semibold text-slate-600 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg">
+              Atomic Idempotency Locks &amp; Payment Reconciliation Ledger
+            </div>
           )}
         </div>
+
+        {/* Authorized Bank / Gateway Settlement Verification Form for Deposit Approval */}
+        {approvingDeposit && (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void handleConfirmDepositApproval(approvingDeposit);
+            }}
+            className="bg-emerald-50/70 border border-emerald-200 rounded-xl p-4 sm:p-5 space-y-4"
+          >
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-emerald-200/80 pb-3">
+              <div className="space-y-0.5">
+                <p className="text-xs font-bold text-[#0B1A30] flex items-center gap-1.5">
+                  <Landmark className="h-4 w-4 text-emerald-700" aria-hidden="true" />
+                  <span>
+                    Verify Payment &amp; Credit Wallet — {approvingDeposit.userId} (
+                    {formatInr(approvingDeposit.amountInr)} →{' '}
+                    {formatCoins(approvingDeposit.coinsRequested)})
+                  </span>
+                </p>
+                <p className="text-[11px] text-slate-600 font-mono">
+                  Order: {approvingDeposit.depositId} · User-Submitted UTR:{' '}
+                  {approvingDeposit.utrNumber || 'Not attached'} · Assigned UPI:{' '}
+                  {approvingDeposit.assignedUpiId}
+                </p>
+              </div>
+              <span className="text-[11px] font-semibold text-amber-800 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded">
+                Requires Bank or Gateway Settlement Confirmation
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+              <div>
+                <label
+                  htmlFor="dep-verification-channel"
+                  className="block text-[11px] font-bold text-slate-700 mb-1"
+                >
+                  Verification Source
+                </label>
+                <select
+                  id="dep-verification-channel"
+                  value={verificationChannel}
+                  onChange={(e) =>
+                    setVerificationChannel(
+                      e.target.value as 'BANK_STATEMENT' | 'GATEWAY_SETTLEMENT'
+                    )
+                  }
+                  className="w-full px-3 py-2 text-xs font-semibold text-[#0B1A30] bg-white border border-slate-300 rounded-lg"
+                >
+                  <option value="BANK_STATEMENT">Authorized Bank Statement</option>
+                  <option value="GATEWAY_SETTLEMENT">Payment Gateway Settlement</option>
+                </select>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="dep-external-tx-id"
+                  className="block text-[11px] font-bold text-slate-700 mb-1"
+                >
+                  Verified Bank / Gateway Txn ID
+                </label>
+                <input
+                  id="dep-external-tx-id"
+                  type="text"
+                  required
+                  minLength={6}
+                  maxLength={64}
+                  value={externalTransactionId}
+                  onChange={(e) => setExternalTransactionId(e.target.value)}
+                  placeholder="e.g. HDFC9876543210 or pay_Rzp..."
+                  className="w-full px-3 py-2 text-xs font-mono bg-white border border-slate-300 rounded-lg"
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="dep-settlement-ref"
+                  className="block text-[11px] font-bold text-slate-700 mb-1"
+                >
+                  Bank Statement / Settlement Ref
+                </label>
+                <input
+                  id="dep-settlement-ref"
+                  type="text"
+                  required
+                  minLength={4}
+                  maxLength={120}
+                  value={settlementReference}
+                  onChange={(e) => setSettlementReference(e.target.value)}
+                  placeholder="e.g. ICICI-STMT-20261123-CR"
+                  className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg"
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="dep-reconciled-amount"
+                  className="block text-[11px] font-bold text-slate-700 mb-1"
+                >
+                  Verified Amount Received (INR)
+                </label>
+                <input
+                  id="dep-reconciled-amount"
+                  type="number"
+                  required
+                  min={100}
+                  max={500000}
+                  step={1}
+                  value={reconciledAmountInr}
+                  onChange={(e) => setReconciledAmountInr(e.target.value)}
+                  className="w-full px-3 py-2 text-xs font-mono bg-white border border-slate-300 rounded-lg"
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
+              <p className="text-[11px] text-slate-600">
+                Atomic lock checks will verify no duplicate credit exists for Order ID, UTR, or
+                Bank/Gateway Transaction ID before crediting {approvingDeposit.userId}.
+              </p>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="submit"
+                  disabled={busyId === approvingDeposit.depositId}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 rounded-lg cursor-pointer"
+                >
+                  <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>
+                    {busyId === approvingDeposit.depositId
+                      ? 'Verifying & Crediting...'
+                      : 'Confirm Verification & Credit'}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={resetApprovalForm}
+                  className="px-3 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg cursor-pointer"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </form>
+        )}
 
         {/* Inline Deposit Rejection Reason Form */}
         {rejectingDeposit && (
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              void handleReviewDeposit(rejectingDeposit, 'REJECTED', rejectionReason);
+              void handleRejectDeposit(rejectingDeposit, rejectionReason);
             }}
             className="bg-red-50 border border-red-200 rounded-lg p-4 flex flex-col sm:flex-row sm:items-end gap-3"
           >
             <div className="flex-1">
-              <label className="block text-[11px] font-bold text-red-800 mb-1">
+              <label
+                htmlFor="dep-rejection-reason"
+                className="block text-[11px] font-bold text-red-800 mb-1"
+              >
                 Rejection Reason for {rejectingDeposit.userId} (UTR:{' '}
                 {rejectingDeposit.utrNumber || 'N/A'})
               </label>
               <input
+                id="dep-rejection-reason"
                 type="text"
                 required
                 minLength={3}
@@ -380,7 +637,7 @@ export function AdminDepositsWithdrawals({ actor }: AdminDepositsWithdrawalsProp
                 disabled={busyId === rejectingDeposit.depositId}
                 className="px-3.5 py-2 text-xs font-semibold text-white bg-red-700 hover:bg-red-800 disabled:opacity-50 rounded-lg cursor-pointer"
               >
-                Confirm Rejection
+                {busyId === rejectingDeposit.depositId ? 'Rejecting...' : 'Confirm Rejection'}
               </button>
               <button
                 type="button"
@@ -397,12 +654,19 @@ export function AdminDepositsWithdrawals({ actor }: AdminDepositsWithdrawalsProp
         )}
 
         {errorMsg && (
-          <div role="alert" className="p-3 text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg">
-            {errorMsg}
+          <div
+            role="alert"
+            className="p-3 text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg flex items-center gap-2"
+          >
+            <ShieldAlert className="h-4 w-4 text-red-700 shrink-0" aria-hidden="true" />
+            <span>{errorMsg}</span>
           </div>
         )}
         {noticeMsg && (
-          <div role="status" className="p-3 text-xs text-emerald-900 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center gap-2">
+          <div
+            role="status"
+            className="p-3 text-xs text-emerald-900 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center gap-2"
+          >
             <CheckCircle2 className="h-4 w-4 text-emerald-700 shrink-0" aria-hidden="true" />
             <span>{noticeMsg}</span>
           </div>
@@ -418,7 +682,7 @@ export function AdminDepositsWithdrawals({ actor }: AdminDepositsWithdrawalsProp
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[820px] border-collapse text-left">
+            <table className="w-full min-w-[880px] border-collapse text-left">
               <thead>
                 <tr className="bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600">
                   <th scope="col" className="py-3 px-5">
@@ -431,10 +695,10 @@ export function AdminDepositsWithdrawals({ actor }: AdminDepositsWithdrawalsProp
                     INR / Coins
                   </th>
                   <th scope="col" className="py-3 px-4">
-                    UPI &amp; UTR Ref
+                    UPI &amp; Settlement Ref
                   </th>
                   <th scope="col" className="py-3 px-4">
-                    Status
+                    Approval Status
                   </th>
                   <th scope="col" className="py-3 px-5 text-right">
                     Actions
@@ -450,7 +714,8 @@ export function AdminDepositsWithdrawals({ actor }: AdminDepositsWithdrawalsProp
                   return (
                     <tr key={dep.depositId} className="hover:bg-slate-50/70">
                       <td className="py-3 px-5 font-mono text-slate-600 whitespace-nowrap">
-                        {formatDateTimeInr(dep.createdAt)}
+                        <div>{formatDateTimeInr(dep.createdAt)}</div>
+                        <div className="text-[10px] text-slate-400">{dep.depositId}</div>
                       </td>
                       <td className="py-3 px-4">
                         <p className="font-mono font-semibold text-[#0B1A30]">{dep.userId}</p>
@@ -469,7 +734,8 @@ export function AdminDepositsWithdrawals({ actor }: AdminDepositsWithdrawalsProp
                         </div>
                         {Boolean(dep.bonusCoins && dep.bonusCoins > 0) && (
                           <div className="text-[10px] text-[#8A6518]">
-                            {dep.packageName || 'Package'} (+{dep.bonusCoins?.toLocaleString('en-IN')} Bonus)
+                            {dep.packageName || 'Package'} (+{dep.bonusCoins?.toLocaleString('en-IN')}{' '}
+                            Bonus)
                           </div>
                         )}
                       </td>
@@ -478,10 +744,20 @@ export function AdminDepositsWithdrawals({ actor }: AdminDepositsWithdrawalsProp
                         <div className="text-slate-500">
                           UTR: {dep.utrNumber || 'Not attached'}
                         </div>
+                        {dep.externalTransactionId && (
+                          <div className="text-emerald-700">
+                            {dep.verificationChannel || 'VERIFIED'}: {dep.externalTransactionId}
+                          </div>
+                        )}
+                        {dep.rejectionReason && dep.status === 'REJECTED' && (
+                          <div className="text-red-700 truncate max-w-[240px]">
+                            Reason: {dep.rejectionReason}
+                          </div>
+                        )}
                       </td>
-                      <td className="py-3 px-4 font-semibold whitespace-nowrap">
+                      <td className="py-3 px-4 whitespace-nowrap">
                         <span
-                          className={`inline-flex px-2 py-0.5 rounded text-[11px] ${
+                          className={`inline-flex px-2 py-0.5 rounded text-[11px] font-semibold ${
                             dep.status === 'APPROVED'
                               ? 'bg-emerald-50 text-emerald-700'
                               : dep.status === 'REJECTED'
@@ -491,6 +767,11 @@ export function AdminDepositsWithdrawals({ actor }: AdminDepositsWithdrawalsProp
                         >
                           {dep.status}
                         </span>
+                        {dep.verifiedAt && (
+                          <div className="text-[10px] font-mono text-slate-500 mt-0.5">
+                            {formatDateTimeInr(dep.verifiedAt)}
+                          </div>
+                        )}
                       </td>
                       <td className="py-3 px-5 text-right whitespace-nowrap">
                         {finalized ? (
@@ -500,7 +781,7 @@ export function AdminDepositsWithdrawals({ actor }: AdminDepositsWithdrawalsProp
                             <button
                               type="button"
                               disabled={isBusy}
-                              onClick={() => void handleReviewDeposit(dep, 'APPROVED')}
+                              onClick={() => openApprovalVerificationForm(dep)}
                               className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold text-white bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 rounded-md cursor-pointer"
                             >
                               <CheckCircle2 className="h-3 w-3" aria-hidden="true" />
@@ -510,6 +791,7 @@ export function AdminDepositsWithdrawals({ actor }: AdminDepositsWithdrawalsProp
                               type="button"
                               disabled={isBusy}
                               onClick={() => {
+                                resetApprovalForm();
                                 setRejectingDeposit(dep);
                                 setRejectionReason('');
                               }}

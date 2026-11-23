@@ -22,6 +22,10 @@ import {
   WithdrawalStatus,
 } from '../types/domain';
 import {
+  formatAdminActionError,
+  isCloudFunctionUnreachableError,
+} from '../utils/cloudFunctionErrorFormatter';
+import {
   extractAccountLast4,
   maskBankAccountNumber,
   maskUpiId,
@@ -523,18 +527,11 @@ export async function submitWalletWithdrawal(params: {
 
     return response.data;
   } catch (err) {
-    const code =
-      typeof err === 'object' && err !== null && 'code' in err
-        ? String((err as { code: unknown }).code)
-        : '';
-    if (code === 'functions/not-found' || code === 'functions/unavailable') {
+    if (isCloudFunctionUnreachableError(err)) {
       throw new Error(
         'Backend withdrawal ledger service (submitWalletWithdrawalFn) is not deployed or unreachable on this Firebase project.'
       );
     }
-    if (err instanceof Error && err.message) {
-      throw err;
-    }
-    throw new Error('Unable to submit withdrawal request.');
+    throw new Error(formatAdminActionError(err, 'Unable to submit withdrawal request.'));
   }
 }

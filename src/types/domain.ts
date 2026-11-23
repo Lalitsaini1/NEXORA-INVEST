@@ -262,6 +262,10 @@ export interface DepositRequest {
   screenshotUrl?: string;
   status: DepositStatus;
   rejectionReason?: string;
+  verificationChannel?: 'BANK_STATEMENT' | 'GATEWAY_SETTLEMENT' | 'GATEWAY_WEBHOOK';
+  externalTransactionId?: string;
+  settlementReference?: string;
+  reconciledAmountInr?: number;
   createdAt: string;
   verifiedAt?: string;
   verifiedByAdminUid?: string;

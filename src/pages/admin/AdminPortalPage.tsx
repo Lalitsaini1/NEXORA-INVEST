@@ -107,6 +107,7 @@ export function AdminPortalPage() {
           items.filter(
             (w) =>
               w.status === 'PENDING' ||
+              w.status === 'PROCESSING' ||
               w.status === 'UNDER_REVIEW' ||
               w.status === 'APPROVED'
           ).length

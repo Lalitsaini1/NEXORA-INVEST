@@ -12,6 +12,7 @@ import {
   PaymentTransactionRecord,
   PaymentWebhookEventRecord,
 } from '../../types/domain';
+import { formatAdminActionError } from '../../utils/cloudFunctionErrorFormatter';
 import { formatCoins, formatDateTimeInr, formatInr } from '../../utils/formatters';
 
 interface PaymentTransactionsPanelProps {
@@ -109,7 +110,7 @@ export function PaymentTransactionsPanel({
       );
     } catch (err) {
       setErrorMsg(
-        err instanceof Error ? err.message : 'Unable to execute placeholder webhook check.'
+        formatAdminActionError(err, 'Unable to execute placeholder webhook check.')
       );
     } finally {
       setBusyDepositId(null);
@@ -279,6 +280,11 @@ export function PaymentTransactionsPanel({
                         <p className="text-slate-500 truncate max-w-[200px]">
                           UTR: {tx.utrReference || '—'}
                         </p>
+                        {tx.gatewayPaymentId && (
+                          <p className="text-emerald-700 truncate max-w-[200px]">
+                            Ref: {tx.gatewayPaymentId}
+                          </p>
+                        )}
                       </td>
                       <td className="py-3 px-4 text-[11px]">
                         <span className="font-mono font-semibold text-[#0B1A30]">

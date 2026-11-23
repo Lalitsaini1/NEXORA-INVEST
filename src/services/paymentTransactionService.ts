@@ -20,6 +20,7 @@ import {
   WebhookVerificationStatus,
 } from '../types/domain';
 import { convertInrToCoins } from '../utils/formatters';
+import { formatAdminActionError } from '../utils/cloudFunctionErrorFormatter';
 import {
   buildDepositCreditLockId,
   buildDepositIdempotencyKey,
@@ -284,7 +285,16 @@ export async function verifyPaymentWithPlaceholderWebhook(params: {
       });
 
       const verifiedAmount = Math.max(100, Math.round(Number(depData.amountInr || 0)));
-      const coinsToCredit = convertInrToCoins(verifiedAmount);
+      const baseCoins = convertInrToCoins(verifiedAmount);
+      const rawBonus =
+        depData.packageId &&
+        typeof depData.bonusCoins === 'number' &&
+        Number.isInteger(depData.bonusCoins) &&
+        depData.bonusCoins >= 0 &&
+        depData.bonusCoins <= verifiedAmount
+          ? depData.bonusCoins
+          : 0;
+      const coinsToCredit = baseCoins + rawBonus;
 
       if (payTxSnap.exists()) {
         if (payTxData?.status !== 'CREDITED' && payTxData?.status !== 'REJECTED') {
@@ -320,6 +330,12 @@ export async function verifyPaymentWithPlaceholderWebhook(params: {
           ...(cleanUtr ? { utrReference: cleanUtr } : {}),
           amountInr: verifiedAmount,
           coinsToCredit,
+          ...(depData.packageId
+            ? {
+                packageId: String(depData.packageId),
+                bonusCoins: rawBonus,
+              }
+            : {}),
           currency: 'INR',
           idempotencyKey,
           creditLockId,
@@ -335,10 +351,19 @@ export async function verifyPaymentWithPlaceholderWebhook(params: {
       }
     });
   } catch (err) {
-    if (err instanceof Error && !err.message.includes('PERMISSION_DENIED')) {
-      throw err;
+    if (err instanceof Error && !/permission[-_ ]denied|missing or insufficient/i.test(err.message)) {
+      throw new Error(formatAdminActionError(err, 'Unable to verify payment webhook event.'));
     }
-    handleFirestoreError(err, OperationType.WRITE, `paymentTransactions/${paymentTxId}`);
+    try {
+      handleFirestoreError(err, OperationType.WRITE, `paymentTransactions/${paymentTxId}`);
+    } catch (wrappedErr) {
+      throw new Error(
+        formatAdminActionError(
+          wrappedErr,
+          'Permission denied while updating payment transaction.'
+        )
+      );
+    }
   }
 
   await recordAdminAction({

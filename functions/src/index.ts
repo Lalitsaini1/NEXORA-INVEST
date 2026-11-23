@@ -5,6 +5,13 @@ import { logger } from 'firebase-functions/v2';
 import { onDocumentUpdated } from 'firebase-functions/v2/firestore';
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
 import {
+  buildCanonicalDepositTxIds,
+  DepositSettlementProofInput,
+  DepositVerificationError,
+  normalizeUtrRef,
+  validateDepositApprovalRequirements,
+} from './depositVerification';
+import {
   buildMailDocumentId,
   buildPlanActivationEmailPayload,
   isPendingToActiveTransition,
@@ -62,11 +69,19 @@ function maskUpi(upiId: string): string {
   return `${head}${'•'.repeat(Math.max(2, local.length - head.length))}${handle}`;
 }
 
+function isAnonymousAuthToken(token: Record<string, unknown>): boolean {
+  const firebaseMeta = token.firebase;
+  if (typeof firebaseMeta === 'object' && firebaseMeta !== null && 'sign_in_provider' in firebaseMeta) {
+    return (firebaseMeta as { sign_in_provider?: unknown }).sign_in_provider === 'anonymous';
+  }
+  return false;
+}
+
 async function assertSuperAdminCaller(request: {
   auth?: { uid: string; token: Record<string, unknown> };
 }): Promise<string> {
-  if (!request.auth) {
-    throw new HttpsError('unauthenticated', 'Authentication is required.');
+  if (!request.auth || isAnonymousAuthToken(request.auth.token)) {
+    throw new HttpsError('unauthenticated', 'Authenticated non-anonymous session is required.');
   }
 
   const uid = request.auth.uid;
@@ -102,8 +117,8 @@ async function assertSuperAdminCaller(request: {
 async function assertAdminCaller(request: {
   auth?: { uid: string; token: Record<string, unknown> };
 }): Promise<{ uid: string; email: string; role: 'ADMIN' | 'SUPER_ADMIN' }> {
-  if (!request.auth) {
-    throw new HttpsError('unauthenticated', 'Authentication is required.');
+  if (!request.auth || isAnonymousAuthToken(request.auth.token)) {
+    throw new HttpsError('unauthenticated', 'Authenticated administrator session is required.');
   }
 
   const uid = request.auth.uid;
@@ -1156,6 +1171,7 @@ export const adminVerifyDepositAndCredit = onCall(async (request) => {
   const depositId = sanitizeId(request.data?.depositId);
   const decision = String(request.data?.decision || '').toUpperCase();
   const rejectionReason = String(request.data?.rejectionReason || '').trim().slice(0, 300);
+  const rawProof = request.data?.settlementProof;
 
   if (!depositId || (decision !== 'APPROVED' && decision !== 'REJECTED')) {
     throw new HttpsError(
@@ -1164,17 +1180,46 @@ export const adminVerifyDepositAndCredit = onCall(async (request) => {
     );
   }
 
-  const paymentTxId = `ptx_${depositId}`;
-  const creditLockId = `lock_dep_${depositId}`;
-  const coinTxId = `ctx_dep_${depositId}`;
-  const idempotencyKey = `dep_${depositId}`;
+  if (decision === 'REJECTED' && rejectionReason.length > 0 && rejectionReason.length < 3) {
+    throw new HttpsError(
+      'invalid-argument',
+      'Rejection reason must be at least 3 characters long.'
+    );
+  }
+
+  const settlementProof: Partial<DepositSettlementProofInput> | null =
+    typeof rawProof === 'object' && rawProof !== null
+      ? {
+          verificationChannel:
+            rawProof.verificationChannel === 'BANK_STATEMENT' ||
+            rawProof.verificationChannel === 'GATEWAY_SETTLEMENT'
+              ? rawProof.verificationChannel
+              : undefined,
+          externalTransactionId:
+            typeof rawProof.externalTransactionId === 'string'
+              ? rawProof.externalTransactionId
+              : undefined,
+          settlementReference:
+            typeof rawProof.settlementReference === 'string'
+              ? rawProof.settlementReference
+              : undefined,
+          reconciledAmountInr:
+            typeof rawProof.reconciledAmountInr === 'number'
+              ? rawProof.reconciledAmountInr
+              : Number(rawProof.reconciledAmountInr),
+        }
+      : null;
+
+  const { paymentTxId, creditLockId, coinTxId, idempotencyKey } =
+    buildCanonicalDepositTxIds(depositId);
 
   const depositRef = db.collection('depositRequests').doc(depositId);
   const payTxRef = db.collection('paymentTransactions').doc(paymentTxId);
   const depLockRef = db.collection('paymentCreditLocks').doc(creditLockId);
+  const adminLogRef = db.collection('adminActivityLogs').doc();
 
   const summaryInfo = await db.runTransaction(async (tx) => {
-    const depSnap = await tx.get(depositRef);
+    const [depSnap, payTxSnap] = await Promise.all([tx.get(depositRef), tx.get(payTxRef)]);
     if (!depSnap.exists) {
       throw new HttpsError('not-found', 'Deposit request not found.');
     }
@@ -1185,42 +1230,17 @@ export const adminVerifyDepositAndCredit = onCall(async (request) => {
       throw new HttpsError('failed-precondition', `Deposit already finalized (${currentStatus}).`);
     }
 
-    const targetUid = String(depData.uid || '');
-    const targetUserId = String(depData.userId || '');
-    const cleanUtr = String(depData.utrNumber || '')
-      .trim()
-      .toUpperCase()
-      .replace(/[^A-Z0-9]/g, '');
-    const utrLockId = cleanUtr ? `lock_utr_${cleanUtr}` : '';
-    const utrLockRef = utrLockId ? db.collection('paymentCreditLocks').doc(utrLockId) : null;
-    const walletRef = db.collection('coinWallets').doc(targetUid);
-    const txRef = db.collection('coinTransactions').doc(coinTxId);
-
-    const [payTxSnap, depLockSnap, utrLockSnap, coinTxSnap, walletSnap] = await Promise.all([
-      tx.get(payTxRef),
-      tx.get(depLockRef),
-      utrLockRef ? tx.get(utrLockRef) : Promise.resolve(null),
-      tx.get(txRef),
-      decision === 'APPROVED' ? tx.get(walletRef) : Promise.resolve(null),
-    ]);
-
-    if (decision === 'APPROVED') {
-      if (
-        depLockSnap.exists ||
-        utrLockSnap?.exists ||
-        coinTxSnap.exists ||
-        (payTxSnap.exists && payTxSnap.data()?.status === 'CREDITED')
-      ) {
-        throw new HttpsError(
-          'already-exists',
-          'Duplicate coin credit blocked: an immutable credit lock already exists for this deposit or UTR reference.'
-        );
-      }
-      if (!walletSnap?.exists) {
-        throw new HttpsError('failed-precondition', 'Member coin wallet does not exist yet.');
-      }
+    const targetUid = sanitizeId(depData.uid);
+    const targetUserId = String(depData.userId || '').trim();
+    if (!targetUid || !/^NX[0-9]{6,10}$/.test(targetUserId)) {
+      throw new HttpsError(
+        'failed-precondition',
+        'Deposit record is missing a valid member UID or NX User ID.'
+      );
     }
 
+    const cleanUtr = normalizeUtrRef(depData.utrNumber);
+    const utrLockId = cleanUtr ? `lock_utr_${cleanUtr}`.slice(0, 128) : '';
     const verifiedAmountInr = Math.max(0, Math.round(Number(depData.amountInr || 0)));
     const baseCoins = verifiedAmountInr;
     const rawBonus =
@@ -1231,111 +1251,17 @@ export const adminVerifyDepositAndCredit = onCall(async (request) => {
       depData.bonusCoins <= verifiedAmountInr
         ? depData.bonusCoins
         : 0;
-    const coins = baseCoins + rawBonus;
+    const totalCoins = baseCoins + rawBonus;
 
-    tx.update(depositRef, {
-      status: decision,
-      rejectionReason:
-        decision === 'REJECTED' ? rejectionReason || 'Rejected by administrator' : '',
-      verifiedAt: FieldValue.serverTimestamp(),
-      verifiedByAdminUid: actor.uid,
-    });
-
-    if (decision === 'APPROVED' && walletSnap?.exists) {
-      const prev = Number(walletSnap.data()?.availableCoins || 0);
-      const purchasedPrev = Number(walletSnap.data()?.purchasedCoins || 0);
-      const earnedPrev = Number(walletSnap.data()?.earnedCoins || 0);
-      const next = prev + coins;
-
-      tx.update(walletRef, {
-        availableCoins: next,
-        purchasedCoins: purchasedPrev + baseCoins,
-        earnedCoins: earnedPrev + rawBonus,
-        updatedAt: FieldValue.serverTimestamp(),
-      });
-
-      tx.set(txRef, {
-        transactionId: coinTxId,
-        uid: targetUid,
-        userId: targetUserId,
-        type: 'COIN_PURCHASE',
-        amount: coins,
-        previousBalance: prev,
-        newBalance: next,
-        referenceId: cleanUtr || depositId,
-        idempotencyKey,
-        status: 'COMPLETED',
-        description:
-          rawBonus > 0
-            ? `Approved INR ₹${verifiedAmountInr} UPI deposit (+${rawBonus} Package Bonus Coins)`
-            : `Approved INR ₹${verifiedAmountInr} UPI deposit`,
-        createdAt: FieldValue.serverTimestamp(),
-      });
-
-      tx.set(depLockRef, {
-        lockId: creditLockId,
-        lockScope: 'DEPOSIT_ORDER',
-        paymentTxId,
-        depositId,
-        uid: targetUid,
-        userId: targetUserId,
-        coinsCredited: coins,
-        coinTransactionId: coinTxId,
-        createdByUid: actor.uid,
-        createdAt: FieldValue.serverTimestamp(),
-      });
-
-      if (utrLockRef && utrLockId) {
-        tx.set(utrLockRef, {
-          lockId: utrLockId,
-          lockScope: 'UTR_REFERENCE',
-          paymentTxId,
-          depositId,
-          uid: targetUid,
-          userId: targetUserId,
-          coinsCredited: coins,
-          coinTransactionId: coinTxId,
-          createdByUid: actor.uid,
-          createdAt: FieldValue.serverTimestamp(),
-        });
-      }
-
-      if (payTxSnap.exists) {
-        const payStatus = payTxSnap.data()?.status;
-        if (payStatus !== 'CREDITED' && payStatus !== 'REJECTED') {
-          tx.update(payTxRef, {
-            ...(utrLockId ? { utrLockId } : {}),
-            status: 'CREDITED',
-            coinTransactionId: coinTxId,
-            updatedAt: FieldValue.serverTimestamp(),
-            creditedAt: FieldValue.serverTimestamp(),
-          });
-        }
-      } else {
-        tx.set(payTxRef, {
-          paymentTxId,
-          depositId,
-          uid: targetUid,
-          userId: targetUserId,
-          provider: 'UPI_GATEWAY',
-          ...(cleanUtr ? { utrReference: cleanUtr } : {}),
-          amountInr: verifiedAmountInr,
-          coinsToCredit: coins,
-          currency: 'INR',
-          idempotencyKey,
-          creditLockId,
-          ...(utrLockId ? { utrLockId } : {}),
-          verificationMethod: 'ADMIN_SETTLEMENT',
-          webhookVerificationStatus: 'NOT_RECEIVED',
-          status: 'CREDITED',
-          coinTransactionId: coinTxId,
-          createdAt: FieldValue.serverTimestamp(),
-          updatedAt: FieldValue.serverTimestamp(),
-          creditedAt: FieldValue.serverTimestamp(),
-        });
-      }
-    } else if (decision === 'REJECTED') {
+    if (decision === 'REJECTED') {
       const failReason = rejectionReason || 'Rejected by administrator';
+      tx.update(depositRef, {
+        status: 'REJECTED',
+        rejectionReason: failReason,
+        verifiedAt: FieldValue.serverTimestamp(),
+        verifiedByAdminUid: actor.uid,
+      });
+
       if (payTxSnap.exists) {
         const payStatus = payTxSnap.data()?.status;
         if (payStatus !== 'CREDITED' && payStatus !== 'REJECTED') {
@@ -1354,7 +1280,13 @@ export const adminVerifyDepositAndCredit = onCall(async (request) => {
           provider: 'UPI_GATEWAY',
           ...(cleanUtr ? { utrReference: cleanUtr } : {}),
           amountInr: verifiedAmountInr,
-          coinsToCredit: coins,
+          coinsToCredit: totalCoins,
+          ...(depData.packageId
+            ? {
+                packageId: String(depData.packageId),
+                bonusCoins: rawBonus,
+              }
+            : {}),
           currency: 'INR',
           idempotencyKey,
           creditLockId,
@@ -1367,24 +1299,253 @@ export const adminVerifyDepositAndCredit = onCall(async (request) => {
           updatedAt: FieldValue.serverTimestamp(),
         });
       }
+
+      tx.set(adminLogRef, {
+        logId: adminLogRef.id,
+        actorUid: actor.uid,
+        actorEmail: actor.email || 'admin@nexorainvest.example',
+        actorRole: actor.role,
+        actionType: 'DEPOSIT_REVIEWED',
+        targetId: depositId,
+        summary: `REJECTED deposit ${depositId} (${targetUserId}, ${totalCoins} Coins): ${failReason}`.slice(
+          0,
+          300
+        ),
+        createdAt: FieldValue.serverTimestamp(),
+      });
+
+      return { targetUserId, coins: totalCoins };
     }
 
-    return { targetUserId, coins };
+    let plan;
+    try {
+      plan = validateDepositApprovalRequirements({
+        deposit: {
+          depositId,
+          uid: targetUid,
+          userId: targetUserId,
+          amountInr: verifiedAmountInr,
+          coinsRequested: Number(depData.coinsRequested || totalCoins),
+          packageId: depData.packageId ? String(depData.packageId) : undefined,
+          bonusCoins: typeof depData.bonusCoins === 'number' ? depData.bonusCoins : undefined,
+          utrNumber: cleanUtr || undefined,
+          screenshotUrl: depData.screenshotUrl ? String(depData.screenshotUrl) : undefined,
+          status: currentStatus,
+        },
+        settlementProof,
+        existingGatewayVerification: payTxSnap.exists
+          ? {
+              webhookVerificationStatus: String(payTxSnap.data()?.webhookVerificationStatus || ''),
+              gatewayPaymentId: payTxSnap.data()?.gatewayPaymentId
+                ? String(payTxSnap.data()?.gatewayPaymentId)
+                : undefined,
+              gatewayOrderId: payTxSnap.data()?.gatewayOrderId
+                ? String(payTxSnap.data()?.gatewayOrderId)
+                : undefined,
+              amountInr: Number(payTxSnap.data()?.amountInr || 0),
+              status: String(payTxSnap.data()?.status || ''),
+            }
+          : null,
+      });
+    } catch (validationErr) {
+      if (validationErr instanceof DepositVerificationError) {
+        throw new HttpsError(validationErr.code, validationErr.message);
+      }
+      throw validationErr;
+    }
+
+    const utrLockRef = plan.utrLockId
+      ? db.collection('paymentCreditLocks').doc(plan.utrLockId)
+      : null;
+    const extLockRef = db.collection('paymentCreditLocks').doc(plan.externalLockId);
+    const walletRef = db.collection('coinWallets').doc(plan.targetUid);
+    const txRef = db.collection('coinTransactions').doc(plan.coinTxId);
+
+    const [depLockSnap, utrLockSnap, extLockSnap, coinTxSnap, walletSnap] = await Promise.all([
+      tx.get(depLockRef),
+      utrLockRef ? tx.get(utrLockRef) : Promise.resolve(null),
+      tx.get(extLockRef),
+      tx.get(txRef),
+      tx.get(walletRef),
+    ]);
+
+    if (
+      depLockSnap.exists ||
+      utrLockSnap?.exists ||
+      extLockSnap.exists ||
+      coinTxSnap.exists ||
+      (payTxSnap.exists && payTxSnap.data()?.status === 'CREDITED')
+    ) {
+      throw new HttpsError(
+        'already-exists',
+        'Duplicate coin credit blocked: an immutable credit lock already exists for this deposit, UTR, or bank/gateway transaction reference.'
+      );
+    }
+
+    if (!walletSnap.exists) {
+      throw new HttpsError('failed-precondition', 'Member coin wallet does not exist yet.');
+    }
+
+    const prev = Number(walletSnap.data()?.availableCoins || 0);
+    const purchasedPrev = Number(walletSnap.data()?.purchasedCoins || 0);
+    const earnedPrev = Number(walletSnap.data()?.earnedCoins || 0);
+    const next = prev + plan.totalCoins;
+
+    tx.update(depositRef, {
+      status: 'APPROVED',
+      rejectionReason: '',
+      verifiedAt: FieldValue.serverTimestamp(),
+      verifiedByAdminUid: actor.uid,
+      verificationChannel: plan.verificationChannel,
+      externalTransactionId: plan.externalTransactionId,
+      settlementReference: plan.settlementReference,
+      reconciledAmountInr: plan.reconciledAmountInr,
+    });
+
+    tx.update(walletRef, {
+      availableCoins: next,
+      purchasedCoins: purchasedPrev + plan.baseCoins,
+      earnedCoins: earnedPrev + plan.bonusCoins,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+
+    tx.set(txRef, {
+      transactionId: plan.coinTxId,
+      uid: plan.targetUid,
+      userId: plan.targetUserId,
+      type: 'COIN_PURCHASE',
+      amount: plan.totalCoins,
+      previousBalance: prev,
+      newBalance: next,
+      referenceId: plan.externalTransactionId || plan.cleanUtr || plan.depositId,
+      idempotencyKey: plan.idempotencyKey,
+      status: 'COMPLETED',
+      description:
+        plan.bonusCoins > 0
+          ? `Approved INR ₹${plan.verifiedAmountInr} deposit (+${plan.bonusCoins} Package Bonus Coins) [${plan.verificationChannel}: ${plan.externalTransactionId}]`
+          : `Approved INR ₹${plan.verifiedAmountInr} deposit [${plan.verificationChannel}: ${plan.externalTransactionId}]`,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+
+    tx.set(depLockRef, {
+      lockId: plan.creditLockId,
+      lockScope: 'DEPOSIT_ORDER',
+      paymentTxId: plan.paymentTxId,
+      depositId: plan.depositId,
+      uid: plan.targetUid,
+      userId: plan.targetUserId,
+      coinsCredited: plan.totalCoins,
+      coinTransactionId: plan.coinTxId,
+      createdByUid: actor.uid,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+
+    tx.set(extLockRef, {
+      lockId: plan.externalLockId,
+      lockScope: 'GATEWAY_PAYMENT',
+      paymentTxId: plan.paymentTxId,
+      depositId: plan.depositId,
+      uid: plan.targetUid,
+      userId: plan.targetUserId,
+      coinsCredited: plan.totalCoins,
+      coinTransactionId: plan.coinTxId,
+      createdByUid: actor.uid,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+
+    if (utrLockRef && plan.utrLockId) {
+      tx.set(utrLockRef, {
+        lockId: plan.utrLockId,
+        lockScope: 'UTR_REFERENCE',
+        paymentTxId: plan.paymentTxId,
+        depositId: plan.depositId,
+        uid: plan.targetUid,
+        userId: plan.targetUserId,
+        coinsCredited: plan.totalCoins,
+        coinTransactionId: plan.coinTxId,
+        createdByUid: actor.uid,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+    }
+
+    if (payTxSnap.exists) {
+      const payStatus = payTxSnap.data()?.status;
+      if (payStatus !== 'CREDITED' && payStatus !== 'REJECTED') {
+        tx.update(payTxRef, {
+          ...(plan.utrLockId ? { utrLockId: plan.utrLockId } : {}),
+          gatewayPaymentId: plan.externalTransactionId.slice(0, 128),
+          gatewayOrderId: plan.settlementReference.slice(0, 128),
+          verificationMethod: plan.verificationMethod,
+          webhookVerificationStatus: plan.webhookVerificationStatus,
+          status: 'CREDITED',
+          coinTransactionId: plan.coinTxId,
+          updatedAt: FieldValue.serverTimestamp(),
+          creditedAt: FieldValue.serverTimestamp(),
+        });
+      }
+    } else {
+      tx.set(payTxRef, {
+        paymentTxId: plan.paymentTxId,
+        depositId: plan.depositId,
+        uid: plan.targetUid,
+        userId: plan.targetUserId,
+        provider: 'UPI_GATEWAY',
+        gatewayOrderId: plan.settlementReference.slice(0, 128),
+        gatewayPaymentId: plan.externalTransactionId.slice(0, 128),
+        ...(plan.cleanUtr ? { utrReference: plan.cleanUtr } : {}),
+        amountInr: plan.verifiedAmountInr,
+        coinsToCredit: plan.totalCoins,
+        ...(depData.packageId
+          ? {
+              packageId: String(depData.packageId),
+              bonusCoins: plan.bonusCoins,
+            }
+          : {}),
+        currency: 'INR',
+        idempotencyKey: plan.idempotencyKey,
+        creditLockId: plan.creditLockId,
+        ...(plan.utrLockId ? { utrLockId: plan.utrLockId } : {}),
+        verificationMethod: plan.verificationMethod,
+        webhookVerificationStatus: plan.webhookVerificationStatus,
+        status: 'CREDITED',
+        coinTransactionId: plan.coinTxId,
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+        creditedAt: FieldValue.serverTimestamp(),
+      });
+    }
+
+    tx.set(adminLogRef, {
+      logId: adminLogRef.id,
+      actorUid: actor.uid,
+      actorEmail: actor.email || 'admin@nexorainvest.example',
+      actorRole: actor.role,
+      actionType: 'DEPOSIT_REVIEWED',
+      targetId: plan.depositId,
+      summary: `APPROVED deposit ${plan.depositId} (${plan.targetUserId}, ${plan.totalCoins} Coins) via ${plan.verificationChannel} (${plan.externalTransactionId})`.slice(
+        0,
+        300
+      ),
+      createdAt: FieldValue.serverTimestamp(),
+    });
+
+    return {
+      targetUserId: plan.targetUserId,
+      coins: plan.totalCoins,
+      coinTxId: plan.coinTxId,
+      externalTransactionId: plan.externalTransactionId,
+    };
   });
 
-  const logRef = db.collection('adminActivityLogs').doc();
-  await logRef.set({
-    logId: logRef.id,
-    actorUid: actor.uid,
-    actorEmail: actor.email || 'admin@nexorainvest.example',
-    actorRole: actor.role,
-    actionType: 'DEPOSIT_REVIEWED',
-    targetId: depositId,
-    summary: `${decision} deposit ${depositId} (${summaryInfo.targetUserId}, ${summaryInfo.coins} Coins)`,
-    createdAt: FieldValue.serverTimestamp(),
-  });
-
-  return { ok: true, depositId, decision, coinsCredited: decision === 'APPROVED' ? summaryInfo.coins : 0 };
+  return {
+    ok: true,
+    depositId,
+    decision,
+    coinsCredited: decision === 'APPROVED' ? summaryInfo.coins : 0,
+    coinTransactionId: 'coinTxId' in summaryInfo ? summaryInfo.coinTxId : undefined,
+    externalTransactionId:
+      'externalTransactionId' in summaryInfo ? summaryInfo.externalTransactionId : undefined,
+  };
 });
 
 /**
@@ -1421,8 +1582,14 @@ export const adminReviewWithdrawalFn = onCall(async (request) => {
       throw new HttpsError('failed-precondition', `Withdrawal already finalized (${curr}).`);
     }
 
-    const targetUid = String(wdData.uid || '');
-    const targetUserId = String(wdData.userId || '');
+    const targetUid = sanitizeId(wdData.uid);
+    const targetUserId = String(wdData.userId || '').trim();
+    if (!targetUid || !targetUserId) {
+      throw new HttpsError(
+        'failed-precondition',
+        'Withdrawal record is missing a valid member UID or User ID.'
+      );
+    }
     const amountInr = Math.max(0, Math.round(Number(wdData.amountInr || 0)));
     const walletRef = db.collection('coinWallets').doc(targetUid);
 

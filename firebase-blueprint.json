@@ -570,6 +570,22 @@
         "screenshotUrl": { "type": "string", "maxLength": 500 },
         "status": { "type": "string", "enum": ["PENDING", "UNDER_REVIEW", "APPROVED", "REJECTED"] },
         "rejectionReason": { "type": "string", "maxLength": 300 },
+        "verificationChannel": {
+          "type": "string",
+          "enum": ["BANK_STATEMENT", "GATEWAY_SETTLEMENT", "GATEWAY_WEBHOOK"]
+        },
+        "externalTransactionId": {
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_.:/\\-]+$"
+        },
+        "settlementReference": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 120
+        },
+        "reconciledAmountInr": { "type": "integer" },
         "createdAt": { "type": "string", "format": "date-time" },
         "verifiedAt": { "type": "string", "format": "date-time" },
         "verifiedByAdminUid": { "type": "string", "maxLength": 128 }

@@ -14,6 +14,10 @@ import { httpsCallable } from 'firebase/functions';
 import { ILLUSTRATIVE_PLANS } from '../data/catalogPreview';
 import { OperationType, auth, db, functions, handleFirestoreError } from '../firebase/client';
 import { InvestmentRequest, ProductPlan, UserPlan } from '../types/domain';
+import {
+  formatAdminActionError,
+  isCloudFunctionUnreachableError,
+} from '../utils/cloudFunctionErrorFormatter';
 import { InvestmentStageError } from '../utils/planErrorFormatter';
 import { evaluatePlanInvestmentEligibility } from '../utils/planInvestment';
 import { attemptLoggedInvestmentRequestWrite } from './investmentDiagnosticService';
@@ -297,19 +301,17 @@ export async function investInProductPlan(params: {
     };
   } catch (processErr) {
     const fnCode = getFirebaseErrorCode(processErr);
-    const functionsUnavailable =
-      fnCode === 'functions/not-found' ||
-      fnCode === 'functions/unavailable' ||
-      fnCode === 'functions/unimplemented';
+    const functionsUnavailable = isCloudFunctionUnreachableError(processErr);
 
     if (!functionsUnavailable) {
       if (processErr instanceof InvestmentStageError) {
         throw processErr;
       }
       throw new InvestmentStageError(
-        processErr instanceof Error
-          ? processErr.message
-          : 'Unable to validate and process investment request on the backend.',
+        formatAdminActionError(
+          processErr,
+          'Unable to validate and process investment request on the backend.'
+        ),
         { code: fnCode, savedAsPending: false, creationMode: 'CLOUD_FUNCTION' }
       );
     }
@@ -343,16 +345,14 @@ export async function investInProductPlan(params: {
     }
   } catch (createFnErr) {
     const fnCode = getFirebaseErrorCode(createFnErr);
-    const functionsUnavailable =
-      fnCode === 'functions/not-found' ||
-      fnCode === 'functions/unavailable' ||
-      fnCode === 'functions/unimplemented';
+    const functionsUnavailable = isCloudFunctionUnreachableError(createFnErr);
 
     if (!functionsUnavailable) {
       throw new InvestmentStageError(
-        createFnErr instanceof Error
-          ? createFnErr.message
-          : 'Unable to create verified investment request on the server.',
+        formatAdminActionError(
+          createFnErr,
+          'Unable to create verified investment request on the server.'
+        ),
         { code: fnCode, savedAsPending: false }
       );
     }
@@ -442,11 +442,7 @@ export async function investInProductPlan(params: {
   } catch (err) {
     const code = getFirebaseErrorCode(err);
 
-    if (
-      code === 'functions/not-found' ||
-      code === 'functions/unavailable' ||
-      code === 'functions/unimplemented'
-    ) {
+    if (isCloudFunctionUnreachableError(err)) {
       throw new InvestmentStageError(
         `Your investment request (${requestId}) was saved as PENDING_VERIFICATION, but the backend Cloud Functions ("processInvestmentRequest" / "investInPlan") are not deployed or unreachable on this Firebase project.`,
         { requestId, savedAsPending: true, code, creationMode }
@@ -455,16 +451,11 @@ export async function investInProductPlan(params: {
     if (err instanceof InvestmentStageError) {
       throw err;
     }
-    if (err instanceof Error && err.message) {
-      throw new InvestmentStageError(err.message, {
-        requestId,
-        savedAsPending: true,
-        code,
-        creationMode,
-      });
-    }
     throw new InvestmentStageError(
-      'Unable to complete backend investment verification. Please try again.',
+      formatAdminActionError(
+        err,
+        'Unable to complete backend investment verification. Please try again.'
+      ),
       { requestId, savedAsPending: true, code, creationMode }
     );
   }

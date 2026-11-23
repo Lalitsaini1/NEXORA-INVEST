@@ -189,5 +189,19 @@ test('firestore.rules enforces default-deny, zero-plaintext password, and strict
       new RegExp(`match /${lockCollection}/\\{lockId\\}[\\s\\S]*allow read, write: if false;`)
     );
   }
+
+  // 24. DepositRequest settlement verification & admin-only approval guardrails
+  for (const field of [
+    'verificationChannel',
+    'externalTransactionId',
+    'settlementReference',
+    'reconciledAmountInr',
+  ]) {
+    assert.ok(field in blueprint.entities.DepositRequest.properties, `Missing DepositRequest property: ${field}`);
+  }
+  assert.match(
+    rules,
+    /match \/depositRequests\/\{depositId\}[\s\S]*incoming\(\)\.status != 'APPROVED'[\s\S]*incoming\(\)\.verificationChannel in \['BANK_STATEMENT', 'GATEWAY_SETTLEMENT', 'GATEWAY_WEBHOOK'\][\s\S]*incoming\(\)\.reconciledAmountInr == existing\(\)\.amountInr[\s\S]*incoming\(\)\.verifiedByAdminUid == request\.auth\.uid/
+  );
 });
 
