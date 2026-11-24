@@ -1,7 +1,7 @@
 {
   "firestore": [
     {
-      "database": "ai-studio-nexorainvest-5bfd69ce-b6b9-406b-b8b5-777b72b7226f",
+      "database": "ai-studio-nexorainvest-c25f96bd-2963-4ef8-b030-e5a6fe625870",
       "rules": "firestore.rules"
     }
   ],

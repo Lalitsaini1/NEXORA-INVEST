@@ -1,12 +1,12 @@
 {
-  "projectId": "gen-lang-client-0957030568",
-  "appId": "1:774762214556:web:0c7187627ab568de89a959",
-  "apiKey": "AIzaSyDvj28VobhPEtZpElzEUox07C7cCUBvg_I",
-  "authDomain": "gen-lang-client-0957030568.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-nexorainvest-5bfd69ce-b6b9-406b-b8b5-777b72b7226f",
-  "storageBucket": "gen-lang-client-0957030568.firebasestorage.app",
-  "messagingSenderId": "774762214556",
+  "projectId": "nexora-invest-e4399",
+  "appId": "1:687715631087:web:57b1b83750a38df7f9801a",
+  "apiKey": "AIzaSyD8g3-CzhoCwY0PrOX6myOueZeDfnUN1CY",
+  "authDomain": "nexora-invest-e4399.firebaseapp.com",
+  "firestoreDatabaseId": "ai-studio-nexorainvest-c25f96bd-2963-4ef8-b030-e5a6fe625870",
+  "storageBucket": "nexora-invest-e4399.firebasestorage.app",
+  "messagingSenderId": "687715631087",
   "measurementId": "",
-  "oAuthClientId": "774762214556-ks644s2tg5oct4m4h5sdqhntag4jfijp.apps.googleusercontent.com",
+  "oAuthClientId": "687715631087-mo62aec1e8i6l5tuarf2fvu9b1ju41tu.apps.googleusercontent.com",
   "recaptchaSiteKey": ""
 }

@@ -1070,6 +1070,14 @@ service cloud.firestore {
         incoming().requestId == existing().requestId &&
         incoming().uid == existing().uid &&
         incoming().userId == existing().userId &&
+        incoming().planId == existing().planId &&
+        incoming().productName == existing().productName &&
+        incoming().planPriceInr == existing().planPriceInr &&
+        incoming().coinCost == existing().coinCost &&
+        incoming().durationDays == existing().durationDays &&
+        incoming().totalRewardEntitlement == existing().totalRewardEntitlement &&
+        incoming().acceptedTerms == existing().acceptedTerms &&
+        incoming().idempotencyKey == existing().idempotencyKey &&
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time;
 

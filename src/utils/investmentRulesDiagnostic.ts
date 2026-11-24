@@ -2,7 +2,7 @@ import { SUPER_ADMIN_EMAILS, SUPER_ADMIN_UID } from '../config/constants';
 import { ProductPlan } from '../types/domain';
 
 export const DEFAULT_DIAGNOSTIC_DATABASE_ID =
-  'ai-studio-nexorainvest-5bfd69ce-b6b9-406b-b8b5-777b72b7226f';
+  'ai-studio-nexorainvest-c25f96bd-2963-4ef8-b030-e5a6fe625870';
 
 export type RuleDiagnosticOperation = 'create' | 'update' | 'delete';
 

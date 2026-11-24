@@ -43,10 +43,10 @@ const https_1 = require("firebase-functions/v2/https");
 const depositVerification_1 = require("./depositVerification");
 const planActivationEmail_1 = require("./planActivationEmail");
 const investmentRequestValidation_1 = require("./investmentRequestValidation");
-const PROJECT_ID = process.env.GCLOUD_PROJECT || 'gen-lang-client-0957030568';
+const PROJECT_ID = process.env.GCLOUD_PROJECT || 'nexora-invest-e4399';
 const MAIL_COLLECTION = process.env.NEXORA_MAIL_COLLECTION || 'mail';
 const DATABASE_ID = process.env.NEXORA_FIRESTORE_DB_ID ||
-    'ai-studio-nexorainvest-5bfd69ce-b6b9-406b-b8b5-777b72b7226f';
+    'ai-studio-nexorainvest-c25f96bd-2963-4ef8-b030-e5a6fe625870';
 if (!admin.apps.length) {
     admin.initializeApp({ projectId: PROJECT_ID });
 }

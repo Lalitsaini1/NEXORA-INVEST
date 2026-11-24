@@ -1,3 +1,5 @@
+import { inspectCloudFunctionError } from './cloudFunctionErrorFormatter';
+
 export class InvestmentStageError extends Error {
   readonly requestId?: string;
   readonly savedAsPending: boolean;
@@ -32,6 +34,42 @@ interface ParsedFirestoreErrorJson {
   error?: unknown;
   operationType?: unknown;
   path?: unknown;
+}
+
+/**
+ * Formats Cloud Function errors raised during member investment flows
+ * (`createInvestmentRequest` / `investInPlan`), preserving genuine server
+ * validation & permission reasons while suppressing raw `internal [0]` blobs.
+ */
+export function formatMemberPlanFunctionError(
+  err: unknown,
+  fallbackMessage: string
+): string {
+  const meta = inspectCloudFunctionError(err);
+
+  if (meta.isInternalTransportZero || meta.isFunctionUnreachable) {
+    return 'Backend investment verification service is currently unreachable. Ensure Cloud Functions are deployed to this Firebase project.';
+  }
+
+  if (meta.code === 'functions/unauthenticated' || meta.code === 'unauthenticated') {
+    return 'Your sign-in session expired or is missing. Please sign in again before investing.';
+  }
+
+  if (
+    meta.rawMessage &&
+    !/^internal(\s*\[\s*0\s*\]|\s+0)?$/i.test(meta.rawMessage)
+  ) {
+    if (meta.rawMessage.startsWith('{') && meta.rawMessage.includes('"operationType"')) {
+      return formatPlanInvestmentError(meta.rawMessage).message;
+    }
+    return meta.rawMessage;
+  }
+
+  if (meta.code === 'functions/permission-denied' || meta.code === 'permission-denied') {
+    return 'Permission denied: your account is not authorized for this investment request.';
+  }
+
+  return fallbackMessage;
 }
 
 export function formatPlanInvestmentError(err: unknown): FormattedPlanError {

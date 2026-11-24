@@ -152,7 +152,7 @@ async function fetchLiveRulePrerequisiteDocs(params: {
  * Strictly read-only live diagnostic utility for `investmentRequests/{requestId}`.
  * Reads current Firebase Auth state plus `users/{uid}`, `productPlans/{planId}`,
  * `adminUsers/{uid}`, and `investmentRequests/{requestId}` from the configured
- * Firestore database (`ai-studio-nexorainvest-5bfd69ce-b6b9-406b-b8b5-777b72b7226f`),
+ * Firestore database (`ai-studio-nexorainvest-c25f96bd-2963-4ef8-b030-e5a6fe625870`),
  * then identifies which exact Firestore Security Rule condition(s) allow or deny the write.
  *
  * Performs ZERO writes and never modifies user wallets, requests, or payment records.
