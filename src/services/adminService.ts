@@ -3,6 +3,7 @@ import {
   deleteDoc,
   doc,
   getDoc,
+  getDocs,
   limit,
   onSnapshot,
   query,
@@ -11,6 +12,7 @@ import {
   setDoc,
   Unsubscribe,
   updateDoc,
+  where,
 } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { SUPER_ADMIN_UID } from '../config/constants';
@@ -26,6 +28,7 @@ import {
   CoinTransaction,
   DepositRequest,
   DepositStatus,
+  InvestmentRequest,
   PayoutMethodType,
   PlatformSettingsRecord,
   ProductPlan,
@@ -33,6 +36,8 @@ import {
   TransactionType,
   UpiAccount,
   UserPayoutMethod,
+  UserPlan,
+  UserPlanStatus,
   UserProfile,
   UserRole,
   WithdrawalRequest,
@@ -627,19 +632,26 @@ export function subscribeAllProductPlans(
   onData: (items: ProductPlan[]) => void,
   onError: (msg: string) => void
 ): Unsubscribe {
-  const q = query(collection(db, 'productPlans'), limit(50));
+  const q = query(collection(db, 'productPlans'), limit(100));
   return onSnapshot(
     q,
     (snap) => {
       const items: ProductPlan[] = snap.docs
         .map((docSnap) => {
           const data = docSnap.data();
-          const coinDeductionAmount = Number(data.coinDeductionAmount || 0);
-          const durationDays = Number(data.durationDays || 1);
-          const totalCoinReward = Number(data.totalCoinReward || 0);
+          const planPriceInr = Math.max(1, Number(data.planPriceInr || 1));
+          const coinDeductionAmount = Math.max(1, Number(data.coinDeductionAmount || planPriceInr));
+          const durationDays = Math.max(1, Number(data.durationDays || 1));
+          const totalCoinReward = Math.max(0, Number(data.totalCoinReward || 0));
+          const derivedExpectedPct =
+            Math.max(0, Math.round(((totalCoinReward - planPriceInr) / planPriceInr) * 10000) / 100);
+          const expectedReturnPercent =
+            typeof data.expectedReturnPercent === 'number' && Number.isFinite(data.expectedReturnPercent)
+              ? data.expectedReturnPercent
+              : derivedExpectedPct;
           const derivedDailyPct =
-            coinDeductionAmount > 0 && durationDays > 0
-              ? Math.round((totalCoinReward / durationDays / coinDeductionAmount) * 10000) / 100
+            durationDays > 0
+              ? Math.round((expectedReturnPercent / durationDays) * 100) / 100
               : 0;
           return {
             planId: String(data.planId || docSnap.id),
@@ -647,7 +659,7 @@ export function subscribeAllProductPlans(
             category: String(data.category || ''),
             imageUrl: String(data.imageUrl || ''),
             displayedValueInr: Number(data.displayedValueInr || 0),
-            planPriceInr: Number(data.planPriceInr || 0),
+            planPriceInr,
             coinDeductionAmount,
             durationDays,
             totalCoinReward,
@@ -660,7 +672,8 @@ export function subscribeAllProductPlans(
             maxCoins:
               typeof data.maxCoins === 'number'
                 ? data.maxCoins
-                : Math.max(1, (coinDeductionAmount || 100) * 10),
+                : Math.max(1, coinDeductionAmount || 100),
+            expectedReturnPercent,
             dailyRewardPercent:
               typeof data.dailyRewardPercent === 'number'
                 ? data.dailyRewardPercent
@@ -685,6 +698,102 @@ export function subscribeAllProductPlans(
   );
 }
 
+export function subscribeAllUserPlans(
+  onData: (items: UserPlan[]) => void,
+  onError: (msg: string) => void
+): Unsubscribe {
+  const q = query(collection(db, 'userPlans'), limit(500));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const items: UserPlan[] = snap.docs
+        .map((docSnap) => {
+          const data = docSnap.data();
+          return {
+            userPlanId: String(data.userPlanId || docSnap.id),
+            uid: String(data.uid || ''),
+            userId: String(data.userId || ''),
+            planId: String(data.planId || ''),
+            productName: String(data.productName || ''),
+            imageUrl: String(data.imageUrl || ''),
+            coinCost: Number(data.coinCost || 0),
+            durationDays: Number(data.durationDays || 1),
+            totalRewardEntitlement: Number(data.totalRewardEntitlement || 0),
+            collectedReward: Number(data.collectedReward || 0),
+            remainingReward: Number(data.remainingReward || 0),
+            daysCompleted: Number(data.daysCompleted || 0),
+            remainingDays: Number(data.remainingDays || 0),
+            startDate: toIso(data.startDate),
+            endDate: toIso(data.endDate),
+            nextRewardEligibilityTime: toIso(data.nextRewardEligibilityTime),
+            status: (data.status as UserPlanStatus) || 'ACTIVE',
+            createdAt: toIso(data.createdAt),
+          };
+        })
+        .sort((a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0));
+      onData(items);
+    },
+    (err) => {
+      try {
+        handleFirestoreError(err, OperationType.LIST, 'userPlans');
+      } catch {
+        onError('Unable to load user plan enrollments.');
+      }
+    }
+  );
+}
+
+export function subscribeAllInvestmentRequests(
+  onData: (items: InvestmentRequest[]) => void,
+  onError: (msg: string) => void
+): Unsubscribe {
+  const q = query(collection(db, 'investmentRequests'), limit(500));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const items: InvestmentRequest[] = snap.docs
+        .map((docSnap) => {
+          const data = docSnap.data();
+          return {
+            requestId: String(data.requestId || docSnap.id),
+            uid: String(data.uid || ''),
+            userId: String(data.userId || ''),
+            planId: String(data.planId || ''),
+            productName: String(data.productName || ''),
+            planPriceInr: Number(data.planPriceInr || 0),
+            coinCost: Number(data.coinCost || 0),
+            durationDays: Number(data.durationDays || 1),
+            totalRewardEntitlement: Number(data.totalRewardEntitlement || 0),
+            acceptedTerms: Boolean(data.acceptedTerms),
+            idempotencyKey: String(data.idempotencyKey || ''),
+            status: (data.status as InvestmentRequest['status']) || 'PENDING_VERIFICATION',
+            paymentStatus: (data.paymentStatus as InvestmentRequest['paymentStatus']) || 'PENDING',
+            activatedUserPlanId: data.activatedUserPlanId
+              ? String(data.activatedUserPlanId)
+              : undefined,
+            coinTransactionId: data.coinTransactionId
+              ? String(data.coinTransactionId)
+              : undefined,
+            verifiedByUid: data.verifiedByUid ? String(data.verifiedByUid) : undefined,
+            failureReason: data.failureReason ? String(data.failureReason) : undefined,
+            createdAt: toIso(data.createdAt),
+            updatedAt: toIso(data.updatedAt),
+            activatedAt: data.activatedAt ? toIso(data.activatedAt) : undefined,
+          };
+        })
+        .sort((a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0));
+      onData(items);
+    },
+    (err) => {
+      try {
+        handleFirestoreError(err, OperationType.LIST, 'investmentRequests');
+      } catch {
+        onError('Unable to load investment requests.');
+      }
+    }
+  );
+}
+
 export async function saveProductPlan(params: {
   actor: AdminActorContext;
   planId?: string;
@@ -698,6 +807,7 @@ export async function saveProductPlan(params: {
   tierName?: string;
   minCoins?: number;
   maxCoins?: number;
+  expectedReturnPercent?: number;
   dailyRewardPercent?: number;
   description: string;
   termsAndConditions: string;
@@ -709,29 +819,70 @@ export async function saveProductPlan(params: {
     throw new Error('Plan name must be at least 2 characters.');
   }
 
-  const planPriceInr = Math.max(1, Math.round(params.planPriceInr));
-  const coinDeductionAmount = convertInrToCoins(planPriceInr);
-  const durationDays = Math.max(1, Math.min(365, Math.round(params.durationDays)));
   const minCoins = Math.max(
     1,
-    Math.min(100000000, Math.round(params.minCoins ?? coinDeductionAmount))
+    Math.min(100000000, Math.round(params.minCoins ?? params.planPriceInr))
   );
   const maxCoins = Math.max(
     minCoins,
-    Math.min(100000000, Math.round(params.maxCoins ?? minCoins * 10))
+    Math.min(100000000, Math.round(params.maxCoins ?? minCoins))
   );
   if (maxCoins < minCoins) {
-    throw new Error('Maximum coin requirement must be greater than or equal to minimum coins.');
+    throw new Error('Maximum investment must be greater than or equal to minimum investment.');
   }
 
-  const dailyRewardPercent = Math.max(
-    0,
-    Math.min(100, Math.round((params.dailyRewardPercent ?? 0) * 100) / 100)
+  const planPriceInr = minCoins;
+  const coinDeductionAmount = convertInrToCoins(planPriceInr);
+  const durationDays = Math.max(1, Math.min(365, Math.round(params.durationDays)));
+
+  const rawExpectedPct =
+    typeof params.expectedReturnPercent === 'number' && Number.isFinite(params.expectedReturnPercent)
+      ? params.expectedReturnPercent
+      : Math.max(0, ((params.totalCoinReward - minCoins) / minCoins) * 100);
+  const expectedReturnPercent = Math.max(0, Math.min(1000, Math.round(rawExpectedPct * 100) / 100));
+  const computedTotalReward = Math.max(
+    minCoins,
+    Math.round(minCoins * (1 + expectedReturnPercent / 100))
   );
-  const totalCoinReward = Math.max(0, Math.round(params.totalCoinReward));
-  const schedule = calculateDailyDistribution(totalCoinReward, durationDays);
-  const dailyCoinRewardPreview = schedule[0] ?? 0;
+  const totalCoinReward =
+    typeof params.expectedReturnPercent === 'number'
+      ? computedTotalReward
+      : Math.max(minCoins, Math.round(params.totalCoinReward));
+  const dailyRewardPercent =
+    typeof params.dailyRewardPercent === 'number' && Number.isFinite(params.dailyRewardPercent)
+      ? Math.max(0, Math.min(100, Math.round(params.dailyRewardPercent * 100) / 100))
+      : Math.round((expectedReturnPercent / durationDays) * 100) / 100;
+
+  const dailyCoinRewardPreview =
+    Math.round(((totalCoinReward - minCoins) / durationDays) * 100) / 100;
   const tierName = (params.tierName?.trim() || 'Standard Tier').slice(0, 48);
+
+  // Prefer server-side admin Cloud Function for authoritative validation and audit logging
+  try {
+    const savePlanFn = httpsCallable<Record<string, unknown>, { ok: boolean }>(
+      functions,
+      'adminSaveInvestmentPlan'
+    );
+    await savePlanFn({
+      planId,
+      productName: cleanName,
+      category: params.category.trim().slice(0, 64) || 'Structured Plan',
+      imageUrl: params.imageUrl.trim().slice(0, 500),
+      minCoins,
+      maxCoins,
+      planPriceInr,
+      durationDays,
+      expectedReturnPercent,
+      description: params.description.trim().slice(0, 600),
+      termsAndConditions: params.termsAndConditions.trim().slice(0, 1000),
+      isActive: params.isActive,
+    });
+    return;
+  } catch (fnErr) {
+    if (!isCloudFunctionUnreachableError(fnErr)) {
+      throw new Error(formatAdminActionError(fnErr, 'Unable to save investment plan.'));
+    }
+  }
 
   const ref = doc(db, 'productPlans', planId);
   try {
@@ -739,9 +890,9 @@ export async function saveProductPlan(params: {
     await setDoc(ref, {
       planId,
       productName: cleanName,
-      category: params.category.trim().slice(0, 64) || 'Electronics',
+      category: params.category.trim().slice(0, 64) || 'Structured Plan',
       imageUrl: params.imageUrl.trim().slice(0, 500),
-      displayedValueInr: Math.max(0, Math.round(params.displayedValueInr)),
+      displayedValueInr: Math.max(0, Math.round(params.displayedValueInr || maxCoins)),
       planPriceInr,
       coinDeductionAmount,
       durationDays,
@@ -750,6 +901,7 @@ export async function saveProductPlan(params: {
       tierName,
       minCoins,
       maxCoins,
+      expectedReturnPercent,
       dailyRewardPercent,
       description: params.description.trim().slice(0, 500),
       termsAndConditions: params.termsAndConditions.trim().slice(0, 1000),
@@ -768,7 +920,43 @@ export async function saveProductPlan(params: {
     actor: params.actor,
     actionType: 'PRODUCT_PLAN_UPDATED',
     targetId: planId,
-    summary: `${params.planId ? 'Updated' : 'Created'} ${tierName} cycle "${cleanName}" (${minCoins}–${maxCoins} Coins · ${durationDays}d · ${dailyRewardPercent}%/day)`,
+    summary: `${params.planId ? 'Updated' : 'Created'} plan "${cleanName}" (₹${minCoins}–₹${maxCoins} · ${durationDays}d · ${expectedReturnPercent}% est. return)`,
+  });
+}
+
+export async function toggleProductPlanStatus(params: {
+  actor: AdminActorContext;
+  planId: string;
+  productName: string;
+  isActive: boolean;
+}): Promise<void> {
+  try {
+    const toggleFn = httpsCallable<
+      { planId: string; isActive: boolean },
+      { ok: boolean }
+    >(functions, 'adminToggleInvestmentPlanStatus');
+    await toggleFn({ planId: params.planId, isActive: params.isActive });
+    return;
+  } catch (fnErr) {
+    if (!isCloudFunctionUnreachableError(fnErr)) {
+      throw new Error(formatAdminActionError(fnErr, 'Unable to update plan status.'));
+    }
+  }
+
+  try {
+    await updateDoc(doc(db, 'productPlans', params.planId), {
+      isActive: params.isActive,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, `productPlans/${params.planId}`);
+  }
+
+  await recordAdminAction({
+    actor: params.actor,
+    actionType: 'PRODUCT_PLAN_UPDATED',
+    targetId: params.planId,
+    summary: `${params.isActive ? 'Activated' : 'Deactivated'} plan "${params.productName}"`,
   });
 }
 
@@ -777,6 +965,45 @@ export async function deleteProductPlan(params: {
   planId: string;
   productName: string;
 }): Promise<void> {
+  // Always guard against deleting plans with active enrollments or pending verification requests
+  const [activePlansSnap, pendingReqSnap] = await Promise.all([
+    getDocs(
+      query(
+        collection(db, 'userPlans'),
+        where('planId', '==', params.planId),
+        where('status', '==', 'ACTIVE'),
+        limit(1)
+      )
+    ),
+    getDocs(
+      query(
+        collection(db, 'investmentRequests'),
+        where('planId', '==', params.planId),
+        where('status', '==', 'PENDING_VERIFICATION'),
+        limit(1)
+      )
+    ),
+  ]);
+
+  if (!activePlansSnap.empty || !pendingReqSnap.empty) {
+    throw new Error(
+      `Cannot delete "${params.productName}" because it has active user investments or pending verification requests. Deactivate the plan instead to stop new enrollments.`
+    );
+  }
+
+  try {
+    const deleteFn = httpsCallable<{ planId: string }, { ok: boolean }>(
+      functions,
+      'adminDeleteInvestmentPlan'
+    );
+    await deleteFn({ planId: params.planId });
+    return;
+  } catch (fnErr) {
+    if (!isCloudFunctionUnreachableError(fnErr)) {
+      throw new Error(formatAdminActionError(fnErr, 'Unable to delete investment plan.'));
+    }
+  }
+
   try {
     await deleteDoc(doc(db, 'productPlans', params.planId));
   } catch (err) {
@@ -787,7 +1014,7 @@ export async function deleteProductPlan(params: {
     actor: params.actor,
     actionType: 'PRODUCT_PLAN_UPDATED',
     targetId: params.planId,
-    summary: `Deleted product plan "${params.productName}"`,
+    summary: `Deleted product plan "${params.productName}" (0 active investments)`,
   });
 }
 
@@ -1733,6 +1960,12 @@ export function subscribePlatformSettings(
           typeof data.coinPackagesCsv === 'string' && data.coinPackagesCsv
             ? data.coinPackagesCsv
             : '100,500,1000,2500,5000,10000',
+        legalComplianceVerified: Boolean(data.legalComplianceVerified),
+        paymentProviderComplianceVerified: Boolean(data.paymentProviderComplianceVerified),
+        realMoneyInvestmentsEnabled: Boolean(data.realMoneyInvestmentsEnabled),
+        complianceStatusNote: data.complianceStatusNote
+          ? String(data.complianceStatusNote)
+          : undefined,
         updatedByUid: String(data.updatedByUid || ''),
         updatedAt: toIso(data.updatedAt),
       });
@@ -1763,9 +1996,29 @@ export async function savePlatformSettings(params: {
   minDepositInr?: number;
   maxDepositInr?: number;
   coinPackagesCsv?: string;
+  legalComplianceVerified?: boolean;
+  paymentProviderComplianceVerified?: boolean;
+  realMoneyInvestmentsEnabled?: boolean;
+  complianceStatusNote?: string;
 }): Promise<void> {
   if (params.actor.role !== 'SUPER_ADMIN') {
     throw new Error('Only Super Admin may update website configuration and security settings.');
+  }
+
+  const legalComplianceVerified = Boolean(params.legalComplianceVerified);
+  const paymentProviderComplianceVerified = Boolean(params.paymentProviderComplianceVerified);
+  const realMoneyInvestmentsEnabled =
+    legalComplianceVerified &&
+    paymentProviderComplianceVerified &&
+    Boolean(params.realMoneyInvestmentsEnabled);
+
+  if (
+    params.realMoneyInvestmentsEnabled &&
+    (!legalComplianceVerified || !paymentProviderComplianceVerified)
+  ) {
+    throw new Error(
+      'Cannot enable real-money investments until both Legal Compliance and Payment Provider Compliance checks are marked verified.'
+    );
   }
 
   const sessionTimeoutMinutes = Math.max(
@@ -1815,6 +2068,10 @@ export async function savePlatformSettings(params: {
       minDepositInr,
       maxDepositInr,
       coinPackagesCsv,
+      legalComplianceVerified,
+      paymentProviderComplianceVerified,
+      realMoneyInvestmentsEnabled,
+      complianceStatusNote: (params.complianceStatusNote || '').trim().slice(0, 300),
       updatedByUid: params.actor.uid,
       updatedAt: serverTimestamp(),
     });
@@ -1826,7 +2083,10 @@ export async function savePlatformSettings(params: {
     actor: params.actor,
     actionType: 'PLATFORM_SETTINGS_UPDATED',
     targetId: 'global',
-    summary: `Updated security & payment config (payouts=${params.payoutsEnabled}, upiDeposits=${params.upiDepositsEnabled ?? true}, retention=${auditLogRetentionDays}d)`,
+    summary: `Updated security, compliance & payment config (legal=${legalComplianceVerified}, provider=${paymentProviderComplianceVerified}, liveInvestments=${realMoneyInvestmentsEnabled}, payouts=${params.payoutsEnabled})`.slice(
+      0,
+      300
+    ),
   });
 }
 

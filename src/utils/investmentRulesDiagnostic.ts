@@ -35,6 +35,7 @@ export interface InvestmentRequestRuleEvalInput {
   userProfileDoc?: Record<string, unknown> | null;
   productPlanDoc?: Record<string, unknown> | null;
   adminUserDoc?: Record<string, unknown> | null;
+  platformSettingsDoc?: Record<string, unknown> | null;
   databaseId?: string;
 }
 
@@ -933,7 +934,34 @@ export function diagnoseInvestmentRequestRules(
       remediation: 'Pass the exact permanent NX User ID stored in users/{uid}.userId.',
     });
 
-    // 9. isMatchingActiveCatalogOrPublishedPlan(incoming()) (firestore.rules:276-294, 1056)
+    // 9. isInvestmentComplianceApproved() (firestore.rules:1056)
+    if (input.platformSettingsDoc !== undefined) {
+      const s = input.platformSettingsDoc;
+      const complianceOk = Boolean(
+        s &&
+          s.legalComplianceVerified === true &&
+          s.paymentProviderComplianceVerified === true &&
+          s.realMoneyInvestmentsEnabled === true
+      );
+      pushResult({
+        id: 'create_compliance_checks_verified',
+        ruleExpression: 'isInvestmentComplianceApproved()',
+        firestoreRulesLocation: 'firestore.rules:296-303, 1056',
+        passed: complianceOk,
+        expected:
+          'platformSettings/global has legalComplianceVerified=true, paymentProviderComplianceVerified=true, realMoneyInvestmentsEnabled=true',
+        actual: s
+          ? `legalComplianceVerified=${formatActual(s.legalComplianceVerified)}, paymentProviderComplianceVerified=${formatActual(s.paymentProviderComplianceVerified)}, realMoneyInvestmentsEnabled=${formatActual(s.realMoneyInvestmentsEnabled)}`
+          : 'platformSettings/global document missing',
+        reason: complianceOk
+          ? 'Real-money legal and payment-provider compliance checks are verified.'
+          : 'Real-money investments are blocked by firestore.rules until legal and payment-provider compliance checks are completed and enabled by Super Admin.',
+        remediation:
+          'Verify legal and payment-provider compliance in Super Admin -> Platform Settings before accepting live investment requests.',
+      });
+    }
+
+    // 10. isMatchingActiveCatalogOrPublishedPlan(incoming()) (firestore.rules:276-295, 1057)
     evaluateCatalogOrPublishedPlanCondition(incoming, input.productPlanDoc, pushResult);
   } else {
     // operation === 'update' invariants (firestore.rules:1062-1066)
@@ -1038,24 +1066,65 @@ function evaluateCatalogOrPublishedPlanCondition(
         `productName: payload=${formatActual(incoming.productName)} vs productPlans=${formatActual(productPlanDoc.productName)}`
       );
     }
-    if (incoming.planPriceInr !== productPlanDoc.planPriceInr) {
-      diffs.push(
-        `planPriceInr: payload=${formatActual(incoming.planPriceInr)} vs productPlans=${formatActual(productPlanDoc.planPriceInr)}`
-      );
+
+    const basePrice =
+      typeof productPlanDoc.planPriceInr === 'number' ? productPlanDoc.planPriceInr : 0;
+    const baseReward =
+      typeof productPlanDoc.totalCoinReward === 'number' ? productPlanDoc.totalCoinReward : 0;
+    const hasCustomRange =
+      typeof productPlanDoc.minCoins === 'number' &&
+      typeof productPlanDoc.maxCoins === 'number' &&
+      productPlanDoc.minCoins >= 1 &&
+      productPlanDoc.maxCoins >= productPlanDoc.minCoins;
+
+    if (hasCustomRange) {
+      const minCoins = productPlanDoc.minCoins as number;
+      const maxCoins = productPlanDoc.maxCoins as number;
+      const price = typeof incoming.planPriceInr === 'number' ? incoming.planPriceInr : -1;
+      const coinCost = typeof incoming.coinCost === 'number' ? incoming.coinCost : -1;
+      const reward =
+        typeof incoming.totalRewardEntitlement === 'number' ? incoming.totalRewardEntitlement : -1;
+
+      if (price !== coinCost) {
+        diffs.push(`coinCost (${formatActual(coinCost)}) != planPriceInr (${formatActual(price)})`);
+      }
+      if (price < minCoins || price > maxCoins) {
+        diffs.push(
+          `planPriceInr (${formatActual(price)}) outside [${minCoins}, ${maxCoins}]`
+        );
+      }
+      if (basePrice > 0) {
+        const expectedProportional = Math.round(price * (baseReward / basePrice));
+        const lhs = reward * basePrice;
+        const rhs = price * baseReward;
+        const absDiff = Math.abs(lhs - rhs);
+        if (absDiff * 2 > basePrice) {
+          diffs.push(
+            `totalRewardEntitlement: payload=${formatActual(reward)} vs proportional=${expectedProportional}`
+          );
+        }
+      }
+    } else {
+      if (incoming.planPriceInr !== productPlanDoc.planPriceInr) {
+        diffs.push(
+          `planPriceInr: payload=${formatActual(incoming.planPriceInr)} vs productPlans=${formatActual(productPlanDoc.planPriceInr)}`
+        );
+      }
+      if (incoming.coinCost !== productPlanDoc.coinDeductionAmount) {
+        diffs.push(
+          `coinCost: payload=${formatActual(incoming.coinCost)} vs productPlans.coinDeductionAmount=${formatActual(productPlanDoc.coinDeductionAmount)}`
+        );
+      }
+      if (incoming.totalRewardEntitlement !== productPlanDoc.totalCoinReward) {
+        diffs.push(
+          `totalRewardEntitlement: payload=${formatActual(incoming.totalRewardEntitlement)} vs productPlans.totalCoinReward=${formatActual(productPlanDoc.totalCoinReward)}`
+        );
+      }
     }
-    if (incoming.coinCost !== productPlanDoc.coinDeductionAmount) {
-      diffs.push(
-        `coinCost: payload=${formatActual(incoming.coinCost)} vs productPlans.coinDeductionAmount=${formatActual(productPlanDoc.coinDeductionAmount)}`
-      );
-    }
+
     if (incoming.durationDays !== productPlanDoc.durationDays) {
       diffs.push(
         `durationDays: payload=${formatActual(incoming.durationDays)} vs productPlans=${formatActual(productPlanDoc.durationDays)}`
-      );
-    }
-    if (incoming.totalRewardEntitlement !== productPlanDoc.totalCoinReward) {
-      diffs.push(
-        `totalRewardEntitlement: payload=${formatActual(incoming.totalRewardEntitlement)} vs productPlans.totalCoinReward=${formatActual(productPlanDoc.totalCoinReward)}`
       );
     }
 
@@ -1063,12 +1132,12 @@ function evaluateCatalogOrPublishedPlanCondition(
     pushResult({
       id: 'create_matches_published_productPlan',
       ruleExpression: 'isMatchingActiveCatalogOrPublishedPlan(incoming()) [published productPlans branch]',
-      firestoreRulesLocation: 'firestore.rules:277-285, 1056',
+      firestoreRulesLocation: 'firestore.rules:277-285, 1057',
       passed,
-      expected: `Active productPlans/${planId} with exact matching productName, planPriceInr, coinDeductionAmount, durationDays, and totalCoinReward`,
+      expected: `Active productPlans/${planId} with matching productName, durationDays, valid [minCoins, maxCoins] INR allocation, and proportional totalRewardEntitlement`,
       actual: passed ? `Exact match with active productPlans/${planId}` : diffs.join('; '),
       reason: passed
-        ? `Payload exactly matches active Firestore productPlans/${planId}.`
+        ? `Payload matches active Firestore productPlans/${planId}.`
         : `Payload does not match active Firestore productPlans/${planId}: ${diffs.join('; ')}.`,
       remediation:
         'Refresh productPlans/{planId} from Firestore (do not fall back to stale client state) and ensure the plan isActive == true.',

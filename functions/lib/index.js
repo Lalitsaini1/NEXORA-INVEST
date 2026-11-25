@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.notifyUserOnInvestmentRequestActivated = exports.notifyUserOnUserPlanActivated = exports.adminReviewWithdrawalFn = exports.adminVerifyDepositAndCredit = exports.submitWalletWithdrawalFn = exports.investInPlan = exports.createInvestmentRequest = exports.processInvestmentRequest = exports.setNexoraAdminRole = exports.provisionNexoraProfile = void 0;
+exports.notifyUserOnInvestmentRequestActivated = exports.notifyUserOnUserPlanActivated = exports.adminReviewWithdrawalFn = exports.adminVerifyDepositAndCredit = exports.submitWalletWithdrawalFn = exports.adminDeleteInvestmentPlan = exports.adminToggleInvestmentPlanStatus = exports.adminSaveInvestmentPlan = exports.investInPlan = exports.createInvestmentRequest = exports.processInvestmentRequest = exports.syncOwnerSuperAdmin = exports.setNexoraAdminRole = exports.provisionNexoraProfile = void 0;
 const node_crypto_1 = require("node:crypto");
 const admin = __importStar(require("firebase-admin"));
 const firestore_1 = require("firebase-admin/firestore");
@@ -51,11 +51,9 @@ if (!admin.apps.length) {
     admin.initializeApp({ projectId: PROJECT_ID });
 }
 const db = (0, firestore_1.getFirestore)(admin.app(), DATABASE_ID);
+const OWNER_ADMIN_EMAIL = 'saini.lalit278@gmail.com';
 const SUPER_ADMIN_UID = 'wZQCw7fXrWQCn5HqdSjS6RQHVyi1';
-const SUPER_ADMIN_EMAILS = new Set([
-    'saini.lalit278@gmail.com',
-    'sainil.lalit278@gmail.com',
-]);
+const SUPER_ADMIN_EMAILS = new Set([OWNER_ADMIN_EMAIL]);
 // Built-in catalog specs imported from ./investmentRequestValidation
 function makeId(prefix) {
     return `${prefix}_${Date.now()}_${(0, node_crypto_1.randomUUID)().replace(/-/g, '').slice(0, 12)}`;
@@ -295,6 +293,77 @@ exports.setNexoraAdminRole = (0, https_1.onCall)(async (request) => {
     await batch.commit();
     return { ok: true, targetUid, role: nextRole };
 });
+/**
+ * Trusted server-side callable that verifies the authenticated caller is the
+ * project owner (verified saini.lalit278@gmail.com or SUPER_ADMIN_UID),
+ * assigns Firebase Auth Custom Claims (`SUPER_ADMIN`), and synchronizes
+ * `adminUsers/{uid}` and `users/{uid}` in Firestore.
+ */
+exports.syncOwnerSuperAdmin = (0, https_1.onCall)(async (request) => {
+    if (!request.auth || isAnonymousAuthToken(request.auth.token)) {
+        throw new https_1.HttpsError('unauthenticated', 'Authenticated session is required.');
+    }
+    const uid = request.auth.uid;
+    const tokenEmail = String(request.auth.token.email || '')
+        .trim()
+        .toLowerCase();
+    const emailVerified = Boolean(request.auth.token.email_verified);
+    const isAuthorizedOwner = uid === SUPER_ADMIN_UID ||
+        (emailVerified && SUPER_ADMIN_EMAILS.has(tokenEmail));
+    if (!isAuthorizedOwner) {
+        throw new https_1.HttpsError('permission-denied', 'Only the verified project owner email (saini.lalit278@gmail.com) may claim Super Admin privileges.');
+    }
+    const authUser = await admin.auth().getUser(uid);
+    const resolvedEmail = (authUser.email || tokenEmail).trim().toLowerCase();
+    if (uid !== SUPER_ADMIN_UID && (!authUser.emailVerified || !SUPER_ADMIN_EMAILS.has(resolvedEmail))) {
+        throw new https_1.HttpsError('permission-denied', 'Owner email must be verified in Firebase Authentication before Super Admin role assignment.');
+    }
+    const preservedClaims = { ...(authUser.customClaims || {}) };
+    preservedClaims.role = 'SUPER_ADMIN';
+    preservedClaims.super_admin = true;
+    preservedClaims.admin = true;
+    await admin.auth().setCustomUserClaims(uid, preservedClaims);
+    const userRef = db.collection('users').doc(uid);
+    const adminRef = db.collection('adminUsers').doc(uid);
+    const logRef = db.collection('adminActivityLogs').doc();
+    await db.runTransaction(async (tx) => {
+        const [userSnap, adminSnap] = await Promise.all([tx.get(userRef), tx.get(adminRef)]);
+        tx.set(adminRef, {
+            uid,
+            email: resolvedEmail || OWNER_ADMIN_EMAIL,
+            displayName: (authUser.displayName || 'NEXORA Owner Super Admin').slice(0, 80),
+            role: 'SUPER_ADMIN',
+            active: true,
+            createdByUid: uid,
+            createdAt: adminSnap.exists ? adminSnap.data()?.createdAt : firestore_1.FieldValue.serverTimestamp(),
+            updatedAt: firestore_1.FieldValue.serverTimestamp(),
+        }, { merge: true });
+        if (userSnap.exists) {
+            tx.set(userRef, {
+                role: 'SUPER_ADMIN',
+                emailVerified: Boolean(authUser.emailVerified),
+                status: 'ACTIVE',
+                updatedAt: firestore_1.FieldValue.serverTimestamp(),
+            }, { merge: true });
+        }
+        tx.set(logRef, {
+            logId: logRef.id,
+            actorUid: uid,
+            actorEmail: resolvedEmail || OWNER_ADMIN_EMAIL,
+            actorRole: 'SUPER_ADMIN',
+            actionType: 'USER_PROMOTED_TO_ADMIN',
+            targetId: uid,
+            summary: `Synchronized server-side SUPER_ADMIN custom claims and directory record for owner (${resolvedEmail || uid})`,
+            createdAt: firestore_1.FieldValue.serverTimestamp(),
+        });
+    });
+    return {
+        ok: true,
+        uid,
+        email: resolvedEmail || OWNER_ADMIN_EMAIL,
+        role: 'SUPER_ADMIN',
+    };
+});
 function assertAuthenticatedMember(request) {
     if (!request.auth || !request.auth.uid) {
         throw new https_1.HttpsError('unauthenticated', 'Authentication is required to submit or process investment requests.');
@@ -326,6 +395,7 @@ function assertValidCallableInvestmentInput(data) {
     return {
         planId,
         idempotencyKey,
+        investmentAmountInr: record.investmentAmountInr,
         expectedPlanPriceInr: record.expectedPlanPriceInr,
         expectedCoinCost: record.expectedCoinCost,
         paymentTxId: sanitizeId(record.paymentTxId),
@@ -333,18 +403,20 @@ function assertValidCallableInvestmentInput(data) {
     };
 }
 async function createOrReusePendingRequestTx(params) {
-    const { uid, planId, idempotencyKey, expectedPlanPriceInr, expectedCoinCost } = params;
+    const { uid, planId, idempotencyKey, investmentAmountInr, expectedPlanPriceInr, expectedCoinCost, } = params;
     const requestId = makeId('invreq');
     const reqLockId = (0, investmentRequestValidation_1.buildDeterministicLockId)('req', uid, idempotencyKey);
     const activityLogId = makeId('ulog');
     const userRef = db.collection('users').doc(uid);
+    const settingsRef = db.collection('platformSettings').doc('global');
     const planRef = db.collection('productPlans').doc(planId);
     const lockRef = db.collection('investmentRequestLocks').doc(reqLockId);
     const invReqRef = db.collection('investmentRequests').doc(requestId);
     const activityRef = db.collection('userActivityLogs').doc(activityLogId);
     return db.runTransaction(async (tx) => {
-        const [userSnap, livePlanSnap, lockSnap] = await Promise.all([
+        const [userSnap, settingsSnap, livePlanSnap, lockSnap] = await Promise.all([
             tx.get(userRef),
+            tx.get(settingsRef),
             tx.get(planRef),
             tx.get(lockRef),
         ]);
@@ -373,6 +445,10 @@ async function createOrReusePendingRequestTx(params) {
             }
             throw new https_1.HttpsError('already-exists', 'Duplicate investment request blocked by idempotency lock.');
         }
+        const complianceGate = (0, investmentRequestValidation_1.evaluateServerComplianceGate)(settingsSnap.exists ? settingsSnap.data() : null);
+        if (!complianceGate.ok) {
+            throw new https_1.HttpsError('failed-precondition', complianceGate.message);
+        }
         if (!userSnap.exists) {
             throw new https_1.HttpsError('failed-precondition', 'Verified member profile not found.');
         }
@@ -381,7 +457,7 @@ async function createOrReusePendingRequestTx(params) {
         if (userData.status !== 'ACTIVE' || !/^NX[0-9]{6,10}$/.test(userId)) {
             throw new https_1.HttpsError('permission-denied', 'Only active member accounts with a verified NX User ID can submit investment requests.');
         }
-        const planResolution = (0, investmentRequestValidation_1.resolveAuthoritativePlanSpec)(planId, livePlanSnap.exists ? livePlanSnap.data() : null);
+        const planResolution = (0, investmentRequestValidation_1.resolveAuthoritativePlanSpec)(planId, livePlanSnap.exists ? livePlanSnap.data() : null, investmentAmountInr);
         if (!planResolution.ok) {
             throw new https_1.HttpsError(planResolution.code, planResolution.message);
         }
@@ -436,12 +512,13 @@ async function createOrReusePendingRequestTx(params) {
     });
 }
 async function executePlanActivationTransaction(params) {
-    const { uid, planId, requestId, idempotencyKey, paymentTxId, depositId, expectedPlanPriceInr, expectedCoinCost, } = params;
+    const { uid, planId, requestId, idempotencyKey, paymentTxId, depositId, investmentAmountInr, expectedPlanPriceInr, expectedCoinCost, } = params;
     const lockId = (0, investmentRequestValidation_1.buildDeterministicLockId)('inv', uid, idempotencyKey);
     const userPlanId = makeId('uplan');
     const coinTxId = `ptx_${userPlanId}`;
     const activityLogId = makeId('ulog');
     const userRef = db.collection('users').doc(uid);
+    const settingsRef = db.collection('platformSettings').doc('global');
     const walletRef = db.collection('coinWallets').doc(uid);
     const planRef = db.collection('productPlans').doc(planId);
     const invReqRef = db.collection('investmentRequests').doc(requestId);
@@ -453,8 +530,9 @@ async function executePlanActivationTransaction(params) {
     const depositRef = depositId ? db.collection('depositRequests').doc(depositId) : null;
     let outcomeError = null;
     const txResult = await db.runTransaction(async (tx) => {
-        const [userSnap, walletSnap, livePlanSnap, invReqSnap, lockSnap, payTxSnap, depositSnap,] = await Promise.all([
+        const [userSnap, settingsSnap, walletSnap, livePlanSnap, invReqSnap, lockSnap, payTxSnap, depositSnap,] = await Promise.all([
             tx.get(userRef),
+            tx.get(settingsRef),
             tx.get(walletRef),
             tx.get(planRef),
             tx.get(invReqRef),
@@ -494,6 +572,11 @@ async function executePlanActivationTransaction(params) {
             }
             throw new https_1.HttpsError('already-exists', 'Duplicate investment transaction blocked by idempotency lock.');
         }
+        const complianceGate = (0, investmentRequestValidation_1.evaluateServerComplianceGate)(settingsSnap.exists ? settingsSnap.data() : null);
+        if (!complianceGate.ok) {
+            throw new https_1.HttpsError('failed-precondition', complianceGate.message);
+        }
+        let requestBoundAmount = investmentAmountInr;
         if (invReqSnap.exists) {
             const reqData = invReqSnap.data();
             if (reqData.uid !== uid) {
@@ -507,6 +590,9 @@ async function executePlanActivationTransaction(params) {
             }
             if (reqData.status === 'REJECTED' || reqData.status === 'FAILED') {
                 throw new https_1.HttpsError('failed-precondition', `Investment request ${requestId} is in terminal status ${String(reqData.status)} and cannot be processed.`);
+            }
+            if (typeof reqData.planPriceInr === 'number' && Number.isInteger(reqData.planPriceInr)) {
+                requestBoundAmount = reqData.planPriceInr;
             }
         }
         // Optional explicit payment proof verification when caller passes a paymentTxId or depositId
@@ -525,7 +611,7 @@ async function executePlanActivationTransaction(params) {
             }
         }
         // Resolve authoritative plan terms strictly on the server
-        const planResolution = (0, investmentRequestValidation_1.resolveAuthoritativePlanSpec)(planId, livePlanSnap.exists ? livePlanSnap.data() : null);
+        const planResolution = (0, investmentRequestValidation_1.resolveAuthoritativePlanSpec)(planId, livePlanSnap.exists ? livePlanSnap.data() : null, requestBoundAmount);
         if (!planResolution.ok) {
             throw new https_1.HttpsError(planResolution.code, planResolution.message);
         }
@@ -717,6 +803,7 @@ exports.processInvestmentRequest = (0, https_1.onCall)(async (request) => {
             uid,
             planId: input.planId,
             idempotencyKey: input.idempotencyKey,
+            investmentAmountInr: input.investmentAmountInr,
             expectedPlanPriceInr: input.expectedPlanPriceInr,
             expectedCoinCost: input.expectedCoinCost,
         });
@@ -729,6 +816,7 @@ exports.processInvestmentRequest = (0, https_1.onCall)(async (request) => {
         idempotencyKey: input.idempotencyKey,
         paymentTxId: input.paymentTxId,
         depositId: input.depositId,
+        investmentAmountInr: input.investmentAmountInr,
         expectedPlanPriceInr: input.expectedPlanPriceInr,
         expectedCoinCost: input.expectedCoinCost,
     });
@@ -746,6 +834,7 @@ exports.createInvestmentRequest = (0, https_1.onCall)(async (request) => {
         uid,
         planId: input.planId,
         idempotencyKey: input.idempotencyKey,
+        investmentAmountInr: input.investmentAmountInr,
         expectedPlanPriceInr: input.expectedPlanPriceInr,
         expectedCoinCost: input.expectedCoinCost,
     });
@@ -767,9 +856,182 @@ exports.investInPlan = (0, https_1.onCall)(async (request) => {
         idempotencyKey: input.idempotencyKey,
         paymentTxId: input.paymentTxId,
         depositId: input.depositId,
+        investmentAmountInr: input.investmentAmountInr,
         expectedPlanPriceInr: input.expectedPlanPriceInr,
         expectedCoinCost: input.expectedCoinCost,
     });
+});
+/**
+ * Admin callable to create or update an investment plan with server-validated
+ * economics (Min/Max INR, Duration, Expected Return %, Daily Reward %, Total Payout, Daily Earnings).
+ */
+exports.adminSaveInvestmentPlan = (0, https_1.onCall)(async (request) => {
+    const actor = await assertAdminCaller(request);
+    const raw = (request.data || {});
+    const rawPlanId = sanitizeId(raw.planId);
+    const planId = rawPlanId && rawPlanId.length <= 64 ? rawPlanId : makeId('plan').slice(0, 64);
+    const productName = String(raw.productName || '').trim().slice(0, 120);
+    const category = String(raw.category || 'Structured Plan').trim().slice(0, 60);
+    const description = String(raw.description || '').trim().slice(0, 600);
+    const termsAndConditions = String(raw.termsAndConditions || '').trim().slice(0, 1000);
+    const imageUrl = String(raw.imageUrl || '').trim().slice(0, 500);
+    const isActive = raw.isActive !== false;
+    const minCoins = Math.round(Number(raw.minCoins ?? raw.planPriceInr ?? 0));
+    const maxCoins = Math.round(Number(raw.maxCoins ?? minCoins));
+    const durationDays = Math.round(Number(raw.durationDays ?? 0));
+    const rawReturnPct = Number(raw.expectedReturnPercent ?? 0);
+    if (productName.length < 2) {
+        throw new https_1.HttpsError('invalid-argument', 'Plan name must be at least 2 characters.');
+    }
+    if (description.length < 4) {
+        throw new https_1.HttpsError('invalid-argument', 'Plan description is required.');
+    }
+    if (!Number.isInteger(minCoins) || minCoins < 1 || minCoins > 100000000) {
+        throw new https_1.HttpsError('invalid-argument', 'Minimum investment must be a whole INR amount between ₹1 and ₹10,00,00,000.');
+    }
+    if (!Number.isInteger(maxCoins) || maxCoins < minCoins || maxCoins > 100000000) {
+        throw new https_1.HttpsError('invalid-argument', 'Maximum investment must be greater than or equal to the minimum investment.');
+    }
+    if (!Number.isInteger(durationDays) || durationDays < 1 || durationDays > 365) {
+        throw new https_1.HttpsError('invalid-argument', 'Investment duration must be between 1 and 365 days.');
+    }
+    if (!Number.isFinite(rawReturnPct) || rawReturnPct < 0 || rawReturnPct > 1000) {
+        throw new https_1.HttpsError('invalid-argument', 'Expected return (%) must be between 0 and 1000.');
+    }
+    const expectedReturnPercent = Math.round(rawReturnPct * 100) / 100;
+    const totalCoinReward = Math.max(minCoins, Math.round(minCoins * (1 + expectedReturnPercent / 100)));
+    const dailyRewardPercent = Math.round((expectedReturnPercent / durationDays) * 100) / 100;
+    const dailyCoinRewardPreview = Math.round(((totalCoinReward - minCoins) / durationDays) * 100) / 100;
+    const planRef = db.collection('productPlans').doc(planId);
+    const logRef = db.collection('adminActivityLogs').doc();
+    await db.runTransaction(async (tx) => {
+        const existing = await tx.get(planRef);
+        tx.set(planRef, {
+            planId,
+            productName,
+            category,
+            description,
+            imageUrl,
+            planPriceInr: minCoins,
+            coinDeductionAmount: minCoins,
+            minCoins,
+            maxCoins,
+            durationDays,
+            expectedReturnPercent,
+            dailyRewardPercent,
+            totalCoinReward,
+            dailyCoinRewardPreview,
+            termsAndConditions: termsAndConditions ||
+                'Returns are indicative estimates only and depend on underlying asset performance. Early exits or withdrawals follow platform settlement schedules and applicable gateway/statutory fees.',
+            isActive,
+            createdAt: existing.exists
+                ? existing.data()?.createdAt || firestore_1.FieldValue.serverTimestamp()
+                : firestore_1.FieldValue.serverTimestamp(),
+            updatedAt: firestore_1.FieldValue.serverTimestamp(),
+            updatedByUid: actor.uid,
+        }, { merge: true });
+        tx.set(logRef, {
+            logId: logRef.id,
+            actorUid: actor.uid,
+            actorEmail: actor.email || OWNER_ADMIN_EMAIL,
+            actorRole: actor.role,
+            actionType: existing.exists ? 'PLAN_UPDATED' : 'PLAN_CREATED',
+            targetId: planId,
+            summary: `${existing.exists ? 'Updated' : 'Created'} investment plan ${productName} (₹${minCoins}–₹${maxCoins}, ${durationDays}d, ${expectedReturnPercent}% est. return)`.slice(0, 300),
+            createdAt: firestore_1.FieldValue.serverTimestamp(),
+        });
+    });
+    return {
+        ok: true,
+        planId,
+        totalCoinReward,
+        dailyCoinRewardPreview,
+        expectedReturnPercent,
+    };
+});
+/**
+ * Admin callable to activate or deactivate an investment plan.
+ */
+exports.adminToggleInvestmentPlanStatus = (0, https_1.onCall)(async (request) => {
+    const actor = await assertAdminCaller(request);
+    const planId = sanitizeId(request.data?.planId);
+    const nextActive = Boolean(request.data?.isActive);
+    if (!planId) {
+        throw new https_1.HttpsError('invalid-argument', 'Valid planId is required.');
+    }
+    const planRef = db.collection('productPlans').doc(planId);
+    const logRef = db.collection('adminActivityLogs').doc();
+    await db.runTransaction(async (tx) => {
+        const snap = await tx.get(planRef);
+        if (!snap.exists) {
+            throw new https_1.HttpsError('not-found', 'Investment plan not found.');
+        }
+        tx.update(planRef, {
+            isActive: nextActive,
+            updatedAt: firestore_1.FieldValue.serverTimestamp(),
+            updatedByUid: actor.uid,
+        });
+        tx.set(logRef, {
+            logId: logRef.id,
+            actorUid: actor.uid,
+            actorEmail: actor.email || OWNER_ADMIN_EMAIL,
+            actorRole: actor.role,
+            actionType: 'PLAN_UPDATED',
+            targetId: planId,
+            summary: `${nextActive ? 'Activated' : 'Deactivated'} plan ${String(snap.data()?.productName || planId)}`.slice(0, 300),
+            createdAt: firestore_1.FieldValue.serverTimestamp(),
+        });
+    });
+    return { ok: true, planId, isActive: nextActive };
+});
+/**
+ * Admin callable to delete an investment plan ONLY when it has zero active investments
+ * and zero pending verification requests. Otherwise forces deactivation instead.
+ */
+exports.adminDeleteInvestmentPlan = (0, https_1.onCall)(async (request) => {
+    const actor = await assertAdminCaller(request);
+    const planId = sanitizeId(request.data?.planId);
+    if (!planId) {
+        throw new https_1.HttpsError('invalid-argument', 'Valid planId is required.');
+    }
+    const [activePlansSnap, pendingReqSnap] = await Promise.all([
+        db
+            .collection('userPlans')
+            .where('planId', '==', planId)
+            .where('status', '==', 'ACTIVE')
+            .limit(1)
+            .get(),
+        db
+            .collection('investmentRequests')
+            .where('planId', '==', planId)
+            .where('status', '==', 'PENDING_VERIFICATION')
+            .limit(1)
+            .get(),
+    ]);
+    if (!activePlansSnap.empty || !pendingReqSnap.empty) {
+        throw new https_1.HttpsError('failed-precondition', 'This plan has active user investments or pending verification requests and cannot be deleted. Deactivate the plan instead to stop new enrollments.');
+    }
+    const planRef = db.collection('productPlans').doc(planId);
+    const snap = await planRef.get();
+    if (!snap.exists) {
+        throw new https_1.HttpsError('not-found', 'Investment plan not found.');
+    }
+    const planName = String(snap.data()?.productName || planId);
+    const batch = db.batch();
+    const logRef = db.collection('adminActivityLogs').doc();
+    batch.delete(planRef);
+    batch.set(logRef, {
+        logId: logRef.id,
+        actorUid: actor.uid,
+        actorEmail: actor.email || OWNER_ADMIN_EMAIL,
+        actorRole: actor.role,
+        actionType: 'PLAN_DELETED',
+        targetId: planId,
+        summary: `Deleted investment plan ${planName} (${planId}) with 0 active investments`.slice(0, 300),
+        createdAt: firestore_1.FieldValue.serverTimestamp(),
+    });
+    await batch.commit();
+    return { ok: true, planId };
 });
 /**
  * Backend-governed member withdrawal request with atomic INR wallet deduction,

@@ -10,9 +10,14 @@ import {
   sanitizeInternalRedirectPath,
 } from '../planNavigation';
 import {
+  aggregateAdminPlanAnalytics,
+  canDeleteInvestmentPlan,
+  computePlanEconomics,
+  evaluateInvestmentComplianceGate,
   evaluatePlanInvestmentEligibility,
   resolveCatalogPlans,
 } from '../planInvestment';
+import { InvestmentRequest, UserPlan } from '../../types/domain';
 
 describe('planNavigation utilities', () => {
   it('blocks external and protocol-relative redirect targets (open redirect protection)', () => {
@@ -144,5 +149,125 @@ describe('planInvestment eligibility & catalog resolution', () => {
     assert.equal(resolved.length, 2);
     assert.equal(resolved[0].planId, ILLUSTRATIVE_PLANS[0].planId);
     assert.equal(resolved[1].planId, ILLUSTRATIVE_PLANS[2].planId);
+  });
+
+  it('computes variable-amount plan economics with proportional payout, expected return %, and daily earnings', () => {
+    const rangePlan: ProductPlan = {
+      ...ILLUSTRATIVE_PLANS[2],
+      planId: 'PLAN_RANGE_TEST',
+      planPriceInr: 1000,
+      coinDeductionAmount: 1000,
+      minCoins: 1000,
+      maxCoins: 5000,
+      durationDays: 20,
+      totalCoinReward: 1250,
+      expectedReturnPercent: 25,
+    };
+
+    const econ = computePlanEconomics({ plan: rangePlan, investmentAmountInr: 3000 });
+    assert.equal(econ.investmentAmountInr, 3000);
+    assert.equal(econ.coinCost, 3000);
+    assert.equal(econ.expectedReturnPercent, 25);
+    assert.equal(econ.estimatedTotalPayoutInr, 3750);
+    assert.equal(econ.estimatedNetProfitInr, 750);
+    assert.equal(econ.dailyEarningsInr, 37.5);
+    assert.equal(
+      econ.dailyDistribution.reduce((sum, v) => sum + v, 0),
+      3750
+    );
+
+    const outOfRange = evaluatePlanInvestmentEligibility({
+      plan: rangePlan,
+      availableCoins: 10000,
+      accountStatus: 'ACTIVE',
+      acceptedTerms: true,
+      investmentAmountInr: 6000,
+      complianceApproved: true,
+    });
+    assert.equal(outOfRange.eligible, false);
+    assert.match(outOfRange.reason || '', /between ₹1,000 and ₹5,000/i);
+
+    const blockedByCompliance = evaluatePlanInvestmentEligibility({
+      plan: rangePlan,
+      availableCoins: 10000,
+      accountStatus: 'ACTIVE',
+      acceptedTerms: true,
+      investmentAmountInr: 2000,
+      complianceApproved: false,
+    });
+    assert.equal(blockedByCompliance.eligible, false);
+    assert.match(blockedByCompliance.reason || '', /compliance checks are complete/i);
+  });
+
+  it('fails closed on compliance gate unless legal, payment provider, and admin flag are all enabled', () => {
+    assert.equal(evaluateInvestmentComplianceGate(null).allowed, false);
+    assert.equal(
+      evaluateInvestmentComplianceGate({
+        legalComplianceVerified: true,
+        paymentProviderComplianceVerified: false,
+        realMoneyInvestmentsEnabled: true,
+      }).allowed,
+      false
+    );
+    assert.equal(
+      evaluateInvestmentComplianceGate({
+        legalComplianceVerified: true,
+        paymentProviderComplianceVerified: true,
+        realMoneyInvestmentsEnabled: true,
+      }).allowed,
+      true
+    );
+  });
+
+  it('blocks plan deletion if active investments or pending requests exist and aggregates admin analytics accurately', () => {
+    const plans: ProductPlan[] = [
+      { ...ILLUSTRATIVE_PLANS[0], planId: 'P1', isActive: true },
+      { ...ILLUSTRATIVE_PLANS[1], planId: 'P2', isActive: false },
+    ];
+    const userPlans: Pick<UserPlan, 'planId' | 'uid' | 'coinCost' | 'status'>[] = [
+      { planId: 'P1', uid: 'u1', coinCost: 100, status: 'ACTIVE' },
+      { planId: 'P1', uid: 'u1', coinCost: 200, status: 'COMPLETED' },
+      { planId: 'P1', uid: 'u2', coinCost: 150, status: 'ACTIVE' },
+      { planId: 'P2', uid: 'u3', coinCost: 500, status: 'COMPLETED' },
+    ];
+    const requests: Pick<InvestmentRequest, 'planId' | 'status'>[] = [
+      { planId: 'P1', status: 'PENDING_VERIFICATION' },
+      { planId: 'P2', status: 'ACTIVATED' },
+    ];
+
+    const p1DeleteCheck = canDeleteInvestmentPlan({
+      planId: 'P1',
+      userPlans,
+      investmentRequests: requests,
+    });
+    assert.equal(p1DeleteCheck.canDelete, false);
+    assert.equal(p1DeleteCheck.activeInvestmentsCount, 2);
+    assert.equal(p1DeleteCheck.pendingRequestsCount, 1);
+
+    const p2DeleteCheck = canDeleteInvestmentPlan({
+      planId: 'P2',
+      userPlans,
+      investmentRequests: requests,
+    });
+    assert.equal(p2DeleteCheck.canDelete, true);
+
+    const analytics = aggregateAdminPlanAnalytics({
+      plans,
+      userPlans,
+      investmentRequests: requests,
+    });
+    assert.equal(analytics.byPlanId.P1.totalInvestors, 2);
+    assert.equal(analytics.byPlanId.P1.activeInvestors, 2);
+    assert.equal(analytics.byPlanId.P1.activeInvestmentsCount, 2);
+    assert.equal(analytics.byPlanId.P1.totalInvestmentAmountInr, 450);
+    assert.equal(analytics.byPlanId.P1.pendingRequestsCount, 1);
+    assert.equal(analytics.byPlanId.P2.totalInvestors, 1);
+    assert.equal(analytics.byPlanId.P2.totalInvestmentAmountInr, 500);
+    assert.equal(analytics.summary.totalPlans, 2);
+    assert.equal(analytics.summary.activePlans, 1);
+    assert.equal(analytics.summary.pausedPlans, 1);
+    assert.equal(analytics.summary.totalInvestors, 3);
+    assert.equal(analytics.summary.totalActiveInvestments, 2);
+    assert.equal(analytics.summary.totalInvestmentAmountInr, 950);
   });
 });

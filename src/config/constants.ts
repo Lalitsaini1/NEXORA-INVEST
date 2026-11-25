@@ -42,10 +42,8 @@ export const ROUTES = {
   DISCLOSURES: '/legal/disclosures',
 } as const;
 
+export const OWNER_ADMIN_EMAIL = 'saini.lalit278@gmail.com';
+
 export const SUPER_ADMIN_UID = 'wZQCw7fXrWQCn5HqdSjS6RQHVyi1';
 
-export const SUPER_ADMIN_EMAILS = [
-  'saini.lalit278@gmail.com',
-  'sainil.lalit278@gmail.com',
-] as const;
-
+export const SUPER_ADMIN_EMAILS = [OWNER_ADMIN_EMAIL] as const;

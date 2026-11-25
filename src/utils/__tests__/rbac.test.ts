@@ -8,6 +8,7 @@ import {
   canModifyUserAccount,
   canPromoteToAdmin,
   canRevokeAdmin,
+  isProtectedSuperAdminEmail,
   isProtectedSuperAdminUid,
   resolveEffectiveUserRole,
 } from '../rbac.ts';
@@ -15,6 +16,10 @@ import {
 test('Super Admin UID wZQCw7fXrWQCn5HqdSjS6RQHVyi1 is always protected from promotion/revocation/modification', () => {
   assert.equal(isProtectedSuperAdminUid(SUPER_ADMIN_UID), true);
   assert.equal(isProtectedSuperAdminUid('random_uid_123'), false);
+  assert.equal(isProtectedSuperAdminEmail('saini.lalit278@gmail.com'), true);
+  assert.equal(isProtectedSuperAdminEmail('SAINI.LALIT278@GMAIL.COM'), true);
+  assert.equal(isProtectedSuperAdminEmail('sainil.lalit278@gmail.com'), false);
+  assert.equal(isProtectedSuperAdminEmail('other@example.com'), false);
 
   assert.equal(canPromoteToAdmin('SUPER_ADMIN', SUPER_ADMIN_UID, 'SUPER_ADMIN'), false);
   assert.equal(canRevokeAdmin('SUPER_ADMIN', 'other_super', SUPER_ADMIN_UID, 'SUPER_ADMIN'), false);
@@ -60,7 +65,7 @@ test('resolveEffectiveUserRole honors Super Admin UID and active admin directory
   assert.equal(
     resolveEffectiveUserRole({
       uid: SUPER_ADMIN_UID,
-      email: 'sainil.lalit278@gmail.com',
+      email: 'saini.lalit278@gmail.com',
       role: 'USER',
     }),
     'SUPER_ADMIN'

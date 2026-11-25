@@ -96,6 +96,7 @@ async function fetchLiveRulePrerequisiteDocs(params: {
   let productPlanDoc: Record<string, unknown> | null = null;
   let existingRequestDoc: Record<string, unknown> | null = null;
   let adminUserDoc: Record<string, unknown> | null = null;
+  let platformSettingsDoc: Record<string, unknown> | null = null;
 
   await Promise.all([
     params.targetProfileUid
@@ -137,6 +138,14 @@ async function fetchLiveRulePrerequisiteDocs(params: {
             readErrors[`adminUsers/${params.adminUid}`] = getErrorMessage(err);
           })
       : Promise.resolve(),
+
+    getDoc(doc(db, 'platformSettings', 'global'))
+      .then((snap) => {
+        platformSettingsDoc = snap.exists() ? snap.data() : null;
+      })
+      .catch((err) => {
+        readErrors['platformSettings/global'] = getErrorMessage(err);
+      }),
   ]);
 
   return {
@@ -144,6 +153,7 @@ async function fetchLiveRulePrerequisiteDocs(params: {
     productPlanDoc,
     existingRequestDoc,
     adminUserDoc,
+    platformSettingsDoc,
     readErrors,
   };
 }
@@ -172,6 +182,7 @@ export async function inspectLiveInvestmentRequestRules(
     productPlanDoc,
     existingRequestDoc,
     adminUserDoc,
+    platformSettingsDoc,
     readErrors,
   } = await fetchLiveRulePrerequisiteDocs({
     targetProfileUid,
@@ -209,6 +220,7 @@ export async function inspectLiveInvestmentRequestRules(
     userProfileDoc,
     productPlanDoc,
     adminUserDoc,
+    platformSettingsDoc,
     databaseId: firebaseConfig.firestoreDatabaseId,
   });
 
@@ -282,6 +294,7 @@ export async function diagnoseAndLogInvestmentRequestWriteAttempt(
     productPlanDoc,
     existingRequestDoc,
     adminUserDoc,
+    platformSettingsDoc,
     readErrors,
   } = await fetchLiveRulePrerequisiteDocs({
     targetProfileUid,
@@ -300,6 +313,7 @@ export async function diagnoseAndLogInvestmentRequestWriteAttempt(
     userProfileDoc,
     productPlanDoc,
     adminUserDoc,
+    platformSettingsDoc,
     databaseId: firebaseConfig.firestoreDatabaseId,
   });
 

@@ -19,7 +19,10 @@ import {
   formatMemberPlanFunctionError,
   InvestmentStageError,
 } from '../utils/planErrorFormatter';
-import { evaluatePlanInvestmentEligibility } from '../utils/planInvestment';
+import {
+  computePlanEconomics,
+  evaluatePlanInvestmentEligibility,
+} from '../utils/planInvestment';
 import { attemptLoggedInvestmentRequestWrite } from './investmentDiagnosticService';
 
 function toIso(raw: unknown): string {
@@ -53,20 +56,30 @@ export function subscribePublicProductPlans(
       const items: ProductPlan[] = snap.docs
         .map((docSnap) => {
           const data = docSnap.data();
+          const planPriceInr = Math.max(1, Number(data.planPriceInr || 1));
+          const coinDeductionAmount = Math.max(1, Number(data.coinDeductionAmount || planPriceInr));
+          const durationDays = Math.max(1, Number(data.durationDays || 1));
+          const totalCoinReward = Math.max(0, Number(data.totalCoinReward || 0));
+          const derivedExpectedPct =
+            Math.max(0, Math.round(((totalCoinReward - planPriceInr) / planPriceInr) * 10000) / 100);
           return {
             planId: String(data.planId || docSnap.id),
             productName: String(data.productName || ''),
             category: String(data.category || ''),
             imageUrl: String(data.imageUrl || ''),
             displayedValueInr: Number(data.displayedValueInr || 0),
-            planPriceInr: Number(data.planPriceInr || 0),
-            coinDeductionAmount: Number(data.coinDeductionAmount || 0),
-            durationDays: Number(data.durationDays || 1),
-            totalCoinReward: Number(data.totalCoinReward || 0),
+            planPriceInr,
+            coinDeductionAmount,
+            durationDays,
+            totalCoinReward,
             dailyCoinRewardPreview: Number(data.dailyCoinRewardPreview || 0),
             tierName: data.tierName ? String(data.tierName) : undefined,
             minCoins: typeof data.minCoins === 'number' ? data.minCoins : undefined,
             maxCoins: typeof data.maxCoins === 'number' ? data.maxCoins : undefined,
+            expectedReturnPercent:
+              typeof data.expectedReturnPercent === 'number'
+                ? data.expectedReturnPercent
+                : derivedExpectedPct,
             dailyRewardPercent:
               typeof data.dailyRewardPercent === 'number'
                 ? data.dailyRewardPercent
@@ -180,6 +193,8 @@ export async function investInProductPlan(params: {
   userId: string;
   plan: ProductPlan;
   acceptedTerms: boolean;
+  investmentAmountInr?: number;
+  complianceApproved?: boolean;
   idempotencyKey?: string;
 }): Promise<{
   userPlan: UserPlan;
@@ -196,6 +211,11 @@ export async function investInProductPlan(params: {
   }
   if (!cleanUid || !/^NX[0-9]{6,10}$/.test(cleanUserId)) {
     throw new Error('Verified NEXORA User ID is required before activating an investment plan.');
+  }
+  if (params.complianceApproved === false) {
+    throw new Error(
+      'Real-money investments are currently disabled until legal and payment-provider compliance checks are completed.'
+    );
   }
   if (!params.acceptedTerms) {
     throw new Error('Please accept the Plan Terms and Conditions before confirming.');
@@ -214,8 +234,14 @@ export async function investInProductPlan(params: {
         imageUrl: String(pd.imageUrl || params.plan.imageUrl || ''),
         coinDeductionAmount: Math.max(1, Math.round(Number(pd.coinDeductionAmount || 0))),
         planPriceInr: Math.max(1, Math.round(Number(pd.planPriceInr || 0))),
+        minCoins: typeof pd.minCoins === 'number' ? pd.minCoins : undefined,
+        maxCoins: typeof pd.maxCoins === 'number' ? pd.maxCoins : undefined,
         durationDays: Math.max(1, Math.round(Number(pd.durationDays || 1))),
         totalCoinReward: Math.max(0, Math.round(Number(pd.totalCoinReward || 0))),
+        expectedReturnPercent:
+          typeof pd.expectedReturnPercent === 'number' ? pd.expectedReturnPercent : undefined,
+        dailyRewardPercent:
+          typeof pd.dailyRewardPercent === 'number' ? pd.dailyRewardPercent : undefined,
         termsAndConditions: String(pd.termsAndConditions || params.plan.termsAndConditions || ''),
         isActive: Boolean(pd.isActive),
       };
@@ -234,11 +260,18 @@ export async function investInProductPlan(params: {
     authoritativePlan = builtIn || params.plan;
   }
 
+  const economics = computePlanEconomics({
+    plan: authoritativePlan,
+    investmentAmountInr: params.investmentAmountInr,
+  });
+
   const eligibility = evaluatePlanInvestmentEligibility({
     plan: authoritativePlan,
-    availableCoins: Math.max(0, Math.round(authoritativePlan.coinDeductionAmount)),
+    availableCoins: economics.investmentAmountInr,
     accountStatus: 'ACTIVE',
     acceptedTerms: params.acceptedTerms,
+    investmentAmountInr: params.investmentAmountInr ?? economics.investmentAmountInr,
+    complianceApproved: params.complianceApproved,
   });
   if (!eligibility.eligible) {
     throw new Error(eligibility.reason || 'Selected investment plan is currently unavailable.');
@@ -249,8 +282,9 @@ export async function investInProductPlan(params: {
   const idempotencyKey =
     rawKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128) || `${cleanUid}_${requestId}`;
 
-  const expectedPlanPriceInr = Math.max(1, Math.round(authoritativePlan.planPriceInr));
-  const expectedCoinCost = Math.max(1, Math.round(authoritativePlan.coinDeductionAmount));
+  const expectedPlanPriceInr = economics.investmentAmountInr;
+  const expectedCoinCost = economics.coinCost;
+  const expectedTotalReward = economics.estimatedTotalPayoutInr;
 
   let creationMode: 'CLOUD_FUNCTION' | 'FIRESTORE_RULES_FALLBACK' = 'CLOUD_FUNCTION';
 
@@ -262,6 +296,7 @@ export async function investInProductPlan(params: {
         planId: string;
         acceptedTerms: boolean;
         idempotencyKey: string;
+        investmentAmountInr: number;
         expectedPlanPriceInr: number;
         expectedCoinCost: number;
       },
@@ -272,6 +307,7 @@ export async function investInProductPlan(params: {
       planId: authoritativePlan.planId,
       acceptedTerms: true,
       idempotencyKey,
+      investmentAmountInr: expectedPlanPriceInr,
       expectedPlanPriceInr,
       expectedCoinCost,
     });
@@ -305,8 +341,8 @@ export async function investInProductPlan(params: {
       productName: authoritativePlan.productName.slice(0, 120),
       planPriceInr: expectedPlanPriceInr,
       coinCost: expectedCoinCost,
-      durationDays: Math.max(1, Math.round(authoritativePlan.durationDays)),
-      totalRewardEntitlement: Math.max(0, Math.round(authoritativePlan.totalCoinReward)),
+      durationDays: economics.durationDays,
+      totalRewardEntitlement: expectedTotalReward,
       acceptedTerms: true,
       idempotencyKey,
       status: 'PENDING_VERIFICATION',
@@ -346,6 +382,7 @@ export async function investInProductPlan(params: {
         planId: string;
         acceptedTerms: boolean;
         idempotencyKey: string;
+        investmentAmountInr: number;
         expectedPlanPriceInr: number;
         expectedCoinCost: number;
       },
@@ -357,6 +394,7 @@ export async function investInProductPlan(params: {
       planId: authoritativePlan.planId,
       acceptedTerms: true,
       idempotencyKey,
+      investmentAmountInr: expectedPlanPriceInr,
       expectedPlanPriceInr,
       expectedCoinCost,
     });
@@ -387,6 +425,7 @@ export async function investInProductPlan(params: {
             planId: string;
             acceptedTerms: boolean;
             idempotencyKey: string;
+            investmentAmountInr: number;
             expectedPlanPriceInr: number;
             expectedCoinCost: number;
           },
@@ -398,6 +437,7 @@ export async function investInProductPlan(params: {
           planId: authoritativePlan.planId,
           acceptedTerms: true,
           idempotencyKey,
+          investmentAmountInr: expectedPlanPriceInr,
           expectedPlanPriceInr,
           expectedCoinCost,
         });

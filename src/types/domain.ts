@@ -175,6 +175,7 @@ export interface ProductPlan {
   minCoins?: number;
   maxCoins?: number;
   dailyRewardPercent?: number;
+  expectedReturnPercent?: number;
   description: string;
   termsAndConditions: string;
   isActive: boolean;
@@ -452,6 +453,10 @@ export interface PlatformSettingsRecord {
   minDepositInr?: number;
   maxDepositInr?: number;
   coinPackagesCsv?: string;
+  legalComplianceVerified?: boolean;
+  paymentProviderComplianceVerified?: boolean;
+  realMoneyInvestmentsEnabled?: boolean;
+  complianceStatusNote?: string;
   updatedByUid: string;
   updatedAt: string;
 }

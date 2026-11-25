@@ -126,3 +126,42 @@ test('computePackageBonusMetrics calculates flat and percentage bonus structures
   assert.equal(opt.bonusCoins, 250);
   assert.equal(opt.tag, 'Best Value');
 });
+
+test('evaluateUpiGatewayAvailability distinguishes read errors, admin pause, missing active UPI endpoints, and ready state', async () => {
+  const { evaluateUpiGatewayAvailability } = await import('../upiGateway.ts');
+
+  const paused = evaluateUpiGatewayAvailability({
+    loading: false,
+    upiDepositsEnabled: false,
+    hasActiveEndpoint: true,
+  });
+  assert.equal(paused.ready, false);
+  assert.equal(paused.reason, 'PAUSED_BY_ADMIN');
+
+  const noEndpoint = evaluateUpiGatewayAvailability({
+    loading: false,
+    upiDepositsEnabled: true,
+    hasActiveEndpoint: false,
+  });
+  assert.equal(noEndpoint.ready, false);
+  assert.equal(noEndpoint.reason, 'NO_ACTIVE_ENDPOINT');
+  assert.match(noEndpoint.headline, /UPI Payment Processing Currently Inactive/);
+
+  const readError = evaluateUpiGatewayAvailability({
+    loading: false,
+    upiDepositsEnabled: true,
+    hasActiveEndpoint: false,
+    readErrorMessage: 'Unable to load authorized UPI payment endpoints.',
+  });
+  assert.equal(readError.ready, false);
+  assert.equal(readError.reason, 'READ_ERROR');
+
+  const ready = evaluateUpiGatewayAvailability({
+    loading: false,
+    upiDepositsEnabled: true,
+    hasActiveEndpoint: true,
+  });
+  assert.equal(ready.ready, true);
+  assert.equal(ready.reason, 'READY');
+});
+

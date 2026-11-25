@@ -26,10 +26,11 @@ service cloud.firestore {
     function isSuperAdmin() {
       return isSignedIn() && (
         request.auth.uid == 'wZQCw7fXrWQCn5HqdSjS6RQHVyi1' ||
-        (request.auth.token.email_verified == true && (
-          request.auth.token.email == 'saini.lalit278@gmail.com' ||
-          request.auth.token.email == 'sainil.lalit278@gmail.com'
-        )) ||
+        request.auth.token.super_admin == true ||
+        request.auth.token.role == 'SUPER_ADMIN' ||
+        (request.auth.token.email_verified == true &&
+         request.auth.token.email is string &&
+         request.auth.token.email.lower() == 'saini.lalit278@gmail.com') ||
         (exists(/databases/$(database)/documents/adminUsers/$(request.auth.uid)) &&
          get(/databases/$(database)/documents/adminUsers/$(request.auth.uid)).data.active == true &&
          get(/databases/$(database)/documents/adminUsers/$(request.auth.uid)).data.role == 'SUPER_ADMIN')
@@ -38,12 +39,15 @@ service cloud.firestore {
 
     function isAdmin() {
       return isSuperAdmin() || (
-        isSignedIn() &&
-        exists(/databases/$(database)/documents/adminUsers/$(request.auth.uid)) &&
-        get(/databases/$(database)/documents/adminUsers/$(request.auth.uid)).data.active == true &&
-        (
-          !('role' in get(/databases/$(database)/documents/adminUsers/$(request.auth.uid)).data) ||
-          get(/databases/$(database)/documents/adminUsers/$(request.auth.uid)).data.role in ['ADMIN', 'SUPER_ADMIN']
+        isSignedIn() && (
+          request.auth.token.admin == true ||
+          request.auth.token.role in ['ADMIN', 'SUPER_ADMIN'] ||
+          (exists(/databases/$(database)/documents/adminUsers/$(request.auth.uid)) &&
+           get(/databases/$(database)/documents/adminUsers/$(request.auth.uid)).data.active == true &&
+           (
+             !('role' in get(/databases/$(database)/documents/adminUsers/$(request.auth.uid)).data) ||
+             get(/databases/$(database)/documents/adminUsers/$(request.auth.uid)).data.role in ['ADMIN', 'SUPER_ADMIN']
+           ))
         )
       );
     }
@@ -273,15 +277,51 @@ service cloud.firestore {
         data.createdAt is timestamp;
     }
 
+    function isInvestmentComplianceApproved() {
+      return exists(/databases/$(database)/documents/platformSettings/global) &&
+        get(/databases/$(database)/documents/platformSettings/global).data.legalComplianceVerified == true &&
+        get(/databases/$(database)/documents/platformSettings/global).data.paymentProviderComplianceVerified == true &&
+        get(/databases/$(database)/documents/platformSettings/global).data.realMoneyInvestmentsEnabled == true;
+    }
+
     function isMatchingActiveCatalogOrPublishedPlan(data) {
       return (
         exists(/databases/$(database)/documents/productPlans/$(data.planId)) &&
         get(/databases/$(database)/documents/productPlans/$(data.planId)).data.isActive == true &&
         data.productName == get(/databases/$(database)/documents/productPlans/$(data.planId)).data.productName &&
-        data.planPriceInr == get(/databases/$(database)/documents/productPlans/$(data.planId)).data.planPriceInr &&
-        data.coinCost == get(/databases/$(database)/documents/productPlans/$(data.planId)).data.coinDeductionAmount &&
+        data.coinCost == data.planPriceInr &&
+        (
+          (
+            !('minCoins' in get(/databases/$(database)/documents/productPlans/$(data.planId)).data) &&
+            data.planPriceInr == get(/databases/$(database)/documents/productPlans/$(data.planId)).data.planPriceInr
+          ) || (
+            'minCoins' in get(/databases/$(database)/documents/productPlans/$(data.planId)).data &&
+            data.planPriceInr >= get(/databases/$(database)/documents/productPlans/$(data.planId)).data.minCoins
+          )
+        ) &&
+        (
+          (
+            !('maxCoins' in get(/databases/$(database)/documents/productPlans/$(data.planId)).data) &&
+            data.planPriceInr == get(/databases/$(database)/documents/productPlans/$(data.planId)).data.planPriceInr
+          ) || (
+            'maxCoins' in get(/databases/$(database)/documents/productPlans/$(data.planId)).data &&
+            data.planPriceInr <= get(/databases/$(database)/documents/productPlans/$(data.planId)).data.maxCoins
+          )
+        ) &&
         data.durationDays == get(/databases/$(database)/documents/productPlans/$(data.planId)).data.durationDays &&
-        data.totalRewardEntitlement == get(/databases/$(database)/documents/productPlans/$(data.planId)).data.totalCoinReward
+        (
+          (
+            data.planPriceInr == get(/databases/$(database)/documents/productPlans/$(data.planId)).data.planPriceInr &&
+            data.totalRewardEntitlement == get(/databases/$(database)/documents/productPlans/$(data.planId)).data.totalCoinReward
+          ) || (
+            2 * data.totalRewardEntitlement * get(/databases/$(database)/documents/productPlans/$(data.planId)).data.planPriceInr >=
+              2 * data.coinCost * get(/databases/$(database)/documents/productPlans/$(data.planId)).data.totalCoinReward -
+              get(/databases/$(database)/documents/productPlans/$(data.planId)).data.planPriceInr &&
+            2 * data.totalRewardEntitlement * get(/databases/$(database)/documents/productPlans/$(data.planId)).data.planPriceInr <=
+              2 * data.coinCost * get(/databases/$(database)/documents/productPlans/$(data.planId)).data.totalCoinReward +
+              get(/databases/$(database)/documents/productPlans/$(data.planId)).data.planPriceInr
+          )
+        )
       ) || (
         !exists(/databases/$(database)/documents/productPlans/$(data.planId)) &&
         (
@@ -399,6 +439,7 @@ service cloud.firestore {
           'minCoins',
           'maxCoins',
           'dailyRewardPercent',
+          'expectedReturnPercent',
           'description',
           'termsAndConditions',
           'isActive',
@@ -419,6 +460,7 @@ service cloud.firestore {
         (!('minCoins' in data) || (data.minCoins is int && data.minCoins >= 1 && data.minCoins <= 100000000)) &&
         (!('maxCoins' in data) || (data.maxCoins is int && data.maxCoins >= 1 && data.maxCoins <= 100000000 && (!('minCoins' in data) || data.maxCoins >= data.minCoins))) &&
         (!('dailyRewardPercent' in data) || (data.dailyRewardPercent is number && data.dailyRewardPercent >= 0 && data.dailyRewardPercent <= 100)) &&
+        (!('expectedReturnPercent' in data) || (data.expectedReturnPercent is number && data.expectedReturnPercent >= 0 && data.expectedReturnPercent <= 1000)) &&
         data.description is string && data.description.size() <= 500 &&
         data.termsAndConditions is string && data.termsAndConditions.size() <= 1000 &&
         data.isActive is bool &&
@@ -851,6 +893,10 @@ service cloud.firestore {
           'minDepositInr',
           'maxDepositInr',
           'coinPackagesCsv',
+          'legalComplianceVerified',
+          'paymentProviderComplianceVerified',
+          'realMoneyInvestmentsEnabled',
+          'complianceStatusNote',
           'updatedByUid',
           'updatedAt'
         ]) &&
@@ -869,6 +915,10 @@ service cloud.firestore {
         (!('minDepositInr' in data) || (data.minDepositInr is int && data.minDepositInr >= 100 && data.minDepositInr <= 100000)) &&
         (!('maxDepositInr' in data) || (data.maxDepositInr is int && data.maxDepositInr >= 100 && data.maxDepositInr <= 500000 && (!('minDepositInr' in data) || data.maxDepositInr >= data.minDepositInr))) &&
         (!('coinPackagesCsv' in data) || (data.coinPackagesCsv is string && data.coinPackagesCsv.size() >= 3 && data.coinPackagesCsv.size() <= 80 && data.coinPackagesCsv.matches('^[0-9]{2,6}(,[0-9]{2,6}){0,7}$'))) &&
+        (!('legalComplianceVerified' in data) || data.legalComplianceVerified is bool) &&
+        (!('paymentProviderComplianceVerified' in data) || data.paymentProviderComplianceVerified is bool) &&
+        (!('realMoneyInvestmentsEnabled' in data) || (data.realMoneyInvestmentsEnabled is bool && (data.realMoneyInvestmentsEnabled == false || ('legalComplianceVerified' in data && data.legalComplianceVerified == true && 'paymentProviderComplianceVerified' in data && data.paymentProviderComplianceVerified == true)))) &&
+        (!('complianceStatusNote' in data) || (data.complianceStatusNote is string && data.complianceStatusNote.size() <= 300)) &&
         isValidId(data.updatedByUid) &&
         data.updatedAt is timestamp;
     }
@@ -1061,6 +1111,7 @@ service cloud.firestore {
         exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status == 'ACTIVE' &&
         incoming().userId == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.userId &&
+        isInvestmentComplianceApproved() &&
         isMatchingActiveCatalogOrPublishedPlan(incoming());
 
       allow update: if isSignedIn() &&

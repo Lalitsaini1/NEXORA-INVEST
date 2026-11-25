@@ -24,6 +24,10 @@ export function AdminPlatformSettings({ actor }: AdminPlatformSettingsProps) {
   const [payoutsEnabled, setPayoutsEnabled] = useState(false);
   const [registrationsEnabled, setRegistrationsEnabled] = useState(true);
   const [upiDepositsEnabled, setUpiDepositsEnabled] = useState(true);
+  const [legalComplianceVerified, setLegalComplianceVerified] = useState(false);
+  const [paymentProviderComplianceVerified, setPaymentProviderComplianceVerified] = useState(false);
+  const [realMoneyInvestmentsEnabled, setRealMoneyInvestmentsEnabled] = useState(false);
+  const [complianceStatusNote, setComplianceStatusNote] = useState('');
   const [minDepositInr, setMinDepositInr] = useState('100');
   const [maxDepositInr, setMaxDepositInr] = useState('500000');
   const [coinPackagesCsv, setCoinPackagesCsv] = useState('100,500,1000,2500,5000,10000');
@@ -42,6 +46,10 @@ export function AdminPlatformSettings({ actor }: AdminPlatformSettingsProps) {
           setPayoutsEnabled(rec.payoutsEnabled);
           setRegistrationsEnabled(rec.registrationsEnabled);
           setUpiDepositsEnabled(rec.upiDepositsEnabled !== false);
+          setLegalComplianceVerified(Boolean(rec.legalComplianceVerified));
+          setPaymentProviderComplianceVerified(Boolean(rec.paymentProviderComplianceVerified));
+          setRealMoneyInvestmentsEnabled(Boolean(rec.realMoneyInvestmentsEnabled));
+          setComplianceStatusNote(rec.complianceStatusNote || '');
           setMinDepositInr(String(rec.minDepositInr ?? 100));
           setMaxDepositInr(String(rec.maxDepositInr ?? 500000));
           setCoinPackagesCsv(rec.coinPackagesCsv || '100,500,1000,2500,5000,10000');
@@ -60,6 +68,9 @@ export function AdminPlatformSettings({ actor }: AdminPlatformSettingsProps) {
     return () => unsub();
   }, []);
 
+  const bothComplianceChecksComplete =
+    legalComplianceVerified && paymentProviderComplianceVerified;
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editable) return;
@@ -72,6 +83,12 @@ export function AdminPlatformSettings({ actor }: AdminPlatformSettingsProps) {
         payoutsEnabled,
         registrationsEnabled,
         upiDepositsEnabled,
+        legalComplianceVerified,
+        paymentProviderComplianceVerified,
+        realMoneyInvestmentsEnabled: bothComplianceChecksComplete
+          ? realMoneyInvestmentsEnabled
+          : false,
+        complianceStatusNote,
         minDepositInr: Number.parseInt(minDepositInr, 10) || 100,
         maxDepositInr: Number.parseInt(maxDepositInr, 10) || 500000,
         coinPackagesCsv,
@@ -84,7 +101,7 @@ export function AdminPlatformSettings({ actor }: AdminPlatformSettingsProps) {
         maxAdminLoginAttempts: settings?.maxAdminLoginAttempts,
         auditLogRetentionDays: settings?.auditLogRetentionDays,
       });
-      setNoticeMsg('Master platform & UPI gateway configuration saved to Firestore.');
+      setNoticeMsg('Master platform, compliance gate, and UPI gateway configuration saved.');
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Unable to save platform settings.');
     } finally {
@@ -107,8 +124,8 @@ export function AdminPlatformSettings({ actor }: AdminPlatformSettingsProps) {
             <span>Website Configuration &amp; Master Security Settings</span>
           </h2>
           <p className="text-xs text-slate-500">
-            Master toggles governing payout eligibility, new registrations, and customer support
-            contact channels.
+            Master toggles governing legal &amp; payment compliance gates, payout eligibility, and
+            customer support contact channels.
           </p>
         </div>
 
@@ -151,6 +168,112 @@ export function AdminPlatformSettings({ actor }: AdminPlatformSettingsProps) {
         <p className="text-xs text-slate-500">Loading platform settings...</p>
       ) : (
         <form onSubmit={handleSave} className="space-y-4">
+          {/* Real-Money Compliance Gate */}
+          <div className="p-4 bg-[#0B1A30] text-white rounded-xl space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-xs font-bold uppercase tracking-wider text-[#D8B45A]">
+                  Real-Money Investment Compliance Gate
+                </p>
+                <p className="text-[11px] text-slate-300 mt-0.5">
+                  Real-money plan enrollments stay blocked on both frontend and Firestore/Cloud
+                  Functions until both compliance checks below are verified.
+                </p>
+              </div>
+              <span
+                className={`px-2.5 py-1 rounded text-[11px] font-semibold ${
+                  bothComplianceChecksComplete && realMoneyInvestmentsEnabled
+                    ? 'bg-emerald-500/20 text-emerald-200 border border-emerald-400/40'
+                    : 'bg-amber-500/20 text-amber-200 border border-amber-400/40'
+                }`}
+              >
+                {bothComplianceChecksComplete && realMoneyInvestmentsEnabled
+                  ? 'LIVE INVESTMENTS ENABLED'
+                  : 'COMPLIANCE HOLD ACTIVE'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <label className="flex items-start gap-2.5 p-3 bg-white/5 border border-white/15 rounded-lg cursor-pointer">
+                <input
+                  type="checkbox"
+                  disabled={!editable}
+                  checked={legalComplianceVerified}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setLegalComplianceVerified(checked);
+                    if (!checked) setRealMoneyInvestmentsEnabled(false);
+                  }}
+                  className="mt-0.5 h-4 w-4 rounded border-slate-400"
+                />
+                <div>
+                  <p className="text-xs font-semibold text-white">Legal &amp; Regulatory Verified</p>
+                  <p className="text-[11px] text-slate-300 mt-0.5">
+                    Terms, risk disclosures, and jurisdiction filings completed.
+                  </p>
+                </div>
+              </label>
+
+              <label className="flex items-start gap-2.5 p-3 bg-white/5 border border-white/15 rounded-lg cursor-pointer">
+                <input
+                  type="checkbox"
+                  disabled={!editable}
+                  checked={paymentProviderComplianceVerified}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setPaymentProviderComplianceVerified(checked);
+                    if (!checked) setRealMoneyInvestmentsEnabled(false);
+                  }}
+                  className="mt-0.5 h-4 w-4 rounded border-slate-400"
+                />
+                <div>
+                  <p className="text-xs font-semibold text-white">Payment Provider Verified</p>
+                  <p className="text-[11px] text-slate-300 mt-0.5">
+                    Merchant KYC, webhook settlement, and escrow/reconciliation active.
+                  </p>
+                </div>
+              </label>
+
+              <label
+                className={`flex items-start gap-2.5 p-3 rounded-lg border ${
+                  bothComplianceChecksComplete
+                    ? 'bg-white/10 border-[#D8B45A]/50 cursor-pointer'
+                    : 'bg-white/5 border-white/10 opacity-60 cursor-not-allowed'
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  disabled={!editable || !bothComplianceChecksComplete}
+                  checked={bothComplianceChecksComplete && realMoneyInvestmentsEnabled}
+                  onChange={(e) => setRealMoneyInvestmentsEnabled(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 rounded border-slate-400"
+                />
+                <div>
+                  <p className="text-xs font-semibold text-[#D8B45A]">
+                    Accept Real-Money Investments
+                  </p>
+                  <p className="text-[11px] text-slate-300 mt-0.5">
+                    Requires both compliance checks above to be verified first.
+                  </p>
+                </div>
+              </label>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-200 mb-1">
+                Compliance Audit Reference / Note (Optional)
+              </label>
+              <input
+                type="text"
+                disabled={!editable}
+                value={complianceStatusNote}
+                onChange={(e) => setComplianceStatusNote(e.target.value)}
+                placeholder="e.g. Awaiting RBI/PSP merchant onboarding reference"
+                className="w-full px-3 py-2 text-xs text-[#0B1A30] bg-white disabled:bg-slate-200 rounded-lg"
+              />
+            </div>
+          </div>
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <label className="flex items-start gap-3 p-4 bg-slate-50 border border-slate-200 rounded-lg cursor-pointer">
               <input

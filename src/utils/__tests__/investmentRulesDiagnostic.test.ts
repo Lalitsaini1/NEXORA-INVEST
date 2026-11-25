@@ -99,6 +99,112 @@ describe('diagnoseInvestmentRequestRules', () => {
     assert.equal(report.failedConditions.length, 0);
   });
 
+  it('enforces real-money compliance gate when platformSettings/global is evaluated and supports variable range investments', () => {
+    const requestId = 'invreq_range_comp_001';
+    const rangePlan = {
+      planId: 'PLAN_RANGE_PRO',
+      productName: 'Industrial Growth Range Plan',
+      planPriceInr: 1000,
+      coinDeductionAmount: 1000,
+      minCoins: 1000,
+      maxCoins: 5000,
+      durationDays: 20,
+      totalCoinReward: 1250,
+      isActive: true,
+    };
+
+    const payload2500 = buildExpectedInvestmentRequestPayload({
+      requestId,
+      uid: 'member_uid_123',
+      userId: 'NX100042',
+      plan: {
+        ...rangePlan,
+        planPriceInr: 2500,
+        coinDeductionAmount: 2500,
+        totalCoinReward: 3125,
+      },
+      acceptedTerms: true,
+      createdAtSentinel: serverTimestamp(),
+      updatedAtSentinel: serverTimestamp(),
+    });
+
+    // Denied when platformSettingsDoc is missing or unverified
+    const missingSettingsReport = diagnoseInvestmentRequestRules({
+      operation: 'create',
+      requestId,
+      auth: ACTIVE_MEMBER_AUTH,
+      incomingData: payload2500,
+      userProfileDoc: ACTIVE_MEMBER_PROFILE,
+      productPlanDoc: rangePlan,
+      platformSettingsDoc: null,
+      existingRequestDoc: null,
+    });
+    assert.equal(missingSettingsReport.allowed, false);
+    assert.equal(
+      missingSettingsReport.firstDenyingCondition?.id,
+      'create_compliance_checks_verified'
+    );
+
+    const partialComplianceReport = diagnoseInvestmentRequestRules({
+      operation: 'create',
+      requestId,
+      auth: ACTIVE_MEMBER_AUTH,
+      incomingData: payload2500,
+      userProfileDoc: ACTIVE_MEMBER_PROFILE,
+      productPlanDoc: rangePlan,
+      platformSettingsDoc: {
+        legalComplianceVerified: true,
+        paymentProviderComplianceVerified: false,
+        realMoneyInvestmentsEnabled: false,
+      },
+      existingRequestDoc: null,
+    });
+    assert.equal(partialComplianceReport.allowed, false);
+    assert.equal(
+      partialComplianceReport.firstDenyingCondition?.id,
+      'create_compliance_checks_verified'
+    );
+
+    // Allowed when all compliance checks are verified and amount/reward scale proportionally
+    const verifiedReport = diagnoseInvestmentRequestRules({
+      operation: 'create',
+      requestId,
+      auth: ACTIVE_MEMBER_AUTH,
+      incomingData: payload2500,
+      userProfileDoc: ACTIVE_MEMBER_PROFILE,
+      productPlanDoc: rangePlan,
+      platformSettingsDoc: {
+        legalComplianceVerified: true,
+        paymentProviderComplianceVerified: true,
+        realMoneyInvestmentsEnabled: true,
+      },
+      existingRequestDoc: null,
+    });
+    assert.equal(verifiedReport.allowed, true);
+    assert.equal(verifiedReport.failedConditions.length, 0);
+
+    // Tampered reward inside range must be denied
+    const tamperedRangeReport = diagnoseInvestmentRequestRules({
+      operation: 'create',
+      requestId,
+      auth: ACTIVE_MEMBER_AUTH,
+      incomingData: { ...payload2500, totalRewardEntitlement: 4000 },
+      userProfileDoc: ACTIVE_MEMBER_PROFILE,
+      productPlanDoc: rangePlan,
+      platformSettingsDoc: {
+        legalComplianceVerified: true,
+        paymentProviderComplianceVerified: true,
+        realMoneyInvestmentsEnabled: true,
+      },
+      existingRequestDoc: null,
+    });
+    assert.equal(tamperedRangeReport.allowed, false);
+    assert.equal(
+      tamperedRangeReport.firstDenyingCondition?.id,
+      'create_matches_published_productPlan'
+    );
+  });
+
   it('pinpoints unauthenticated and anonymous Firebase Auth failures (isSignedIn)', () => {
     const requestId = 'invreq_unauth_001';
     const payload = buildExpectedInvestmentRequestPayload({

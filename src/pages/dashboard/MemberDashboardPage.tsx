@@ -16,6 +16,7 @@ import { FinancialInsightsCharts } from '../../components/dashboard/FinancialIns
 import { InvestmentHistory } from '../../components/dashboard/InvestmentHistory';
 import { MarketNewsTicker } from '../../components/dashboard/MarketNewsTicker';
 import { MemberActivityLog } from '../../components/dashboard/MemberActivityLog';
+import { MemberInvestmentPlansSection } from '../../components/dashboard/MemberInvestmentPlansSection';
 import { ProTipsBanner } from '../../components/dashboard/ProTipsBanner';
 import { ProfileAvatarControl } from '../../components/dashboard/ProfileAvatarControl';
 import { ProfitProjectionCalculator } from '../../components/dashboard/ProfitProjectionCalculator';
@@ -328,6 +329,15 @@ export function MemberDashboardPage() {
         <FinancialInsightsCharts
           uid={firebaseUser.uid}
           availableCoins={wallet?.availableCoins ?? 0}
+          highContrast={isHighContrast}
+        />
+
+        {/* Available Investment Plans & Live Active Investments */}
+        <MemberInvestmentPlansSection
+          uid={firebaseUser.uid}
+          profile={profile}
+          wallet={wallet}
+          profileInitializing={profileInitializing}
           highContrast={isHighContrast}
         />
 

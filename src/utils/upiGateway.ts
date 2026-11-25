@@ -281,3 +281,70 @@ export function buildUpiPaymentIntentUrl(
       return `upi://pay?${query}`;
   }
 }
+
+export type UpiGatewayAvailabilityReason =
+  | 'LOADING'
+  | 'READ_ERROR'
+  | 'PAUSED_BY_ADMIN'
+  | 'NO_ACTIVE_ENDPOINT'
+  | 'READY';
+
+export interface UpiGatewayAvailability {
+  ready: boolean;
+  reason: UpiGatewayAvailabilityReason;
+  headline: string;
+  detail: string;
+}
+
+export function evaluateUpiGatewayAvailability(params: {
+  loading: boolean;
+  upiDepositsEnabled: boolean;
+  hasActiveEndpoint: boolean;
+  readErrorMessage?: string | null;
+}): UpiGatewayAvailability {
+  if (params.loading) {
+    return {
+      ready: false,
+      reason: 'LOADING',
+      headline: 'Checking UPI Payment Gateway Configuration...',
+      detail: 'Loading authorized UPI payment endpoints from Firestore.',
+    };
+  }
+
+  if (params.readErrorMessage && params.readErrorMessage.trim().length > 0) {
+    return {
+      ready: false,
+      reason: 'READ_ERROR',
+      headline: 'UPI Payment Gateway Unavailable',
+      detail: params.readErrorMessage.trim(),
+    };
+  }
+
+  if (!params.upiDepositsEnabled) {
+    return {
+      ready: false,
+      reason: 'PAUSED_BY_ADMIN',
+      headline: 'UPI Payment Processing Currently Inactive',
+      detail:
+        'UPI coin deposits are currently paused by platform administration (platformSettings/global upiDepositsEnabled = false).',
+    };
+  }
+
+  if (!params.hasActiveEndpoint) {
+    return {
+      ready: false,
+      reason: 'NO_ACTIVE_ENDPOINT',
+      headline: 'UPI Payment Processing Currently Inactive',
+      detail:
+        'No active UPI payment endpoint is configured in Firestore (upiAccounts has 0 active records). Coin purchases remain paused until an administrator adds and activates a verified UPI endpoint in the Admin Portal.',
+    };
+  }
+
+  return {
+    ready: true,
+    reason: 'READY',
+    headline: 'UPI Payment Gateway Active',
+    detail: 'Authorized UPI payment endpoint loaded from Firestore.',
+  };
+}
+

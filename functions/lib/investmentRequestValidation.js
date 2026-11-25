@@ -4,6 +4,7 @@ exports.PROTECTED_SERVER_FIELDS = exports.BUILT_IN_PLANS = void 0;
 exports.sanitizeIdentifier = sanitizeIdentifier;
 exports.buildDeterministicLockId = buildDeterministicLockId;
 exports.detectTamperedServerFields = detectTamperedServerFields;
+exports.evaluateServerComplianceGate = evaluateServerComplianceGate;
 exports.resolveAuthoritativePlanSpec = resolveAuthoritativePlanSpec;
 exports.validatePlanAmountsMatch = validatePlanAmountsMatch;
 exports.buildPendingInvestmentRequestDoc = buildPendingInvestmentRequestDoc;
@@ -15,7 +16,11 @@ exports.BUILT_IN_PLANS = {
         imageUrl: '',
         planPriceInr: 100,
         coinCost: 100,
+        minInvestmentInr: 100,
+        maxInvestmentInr: 100,
         durationDays: 7,
+        expectedReturnPercent: 88,
+        dailyRewardPercent: 12.57,
         totalRewardEntitlement: 188,
         isActive: true,
     },
@@ -25,7 +30,11 @@ exports.BUILT_IN_PLANS = {
         imageUrl: '',
         planPriceInr: 500,
         coinCost: 500,
+        minInvestmentInr: 500,
+        maxInvestmentInr: 500,
         durationDays: 14,
+        expectedReturnPercent: 30,
+        dailyRewardPercent: 2.14,
         totalRewardEntitlement: 650,
         isActive: true,
     },
@@ -35,7 +44,11 @@ exports.BUILT_IN_PLANS = {
         imageUrl: '',
         planPriceInr: 1000,
         coinCost: 1000,
+        minInvestmentInr: 1000,
+        maxInvestmentInr: 1000,
         durationDays: 21,
+        expectedReturnPercent: 32,
+        dailyRewardPercent: 1.52,
         totalRewardEntitlement: 1320,
         isActive: true,
     },
@@ -45,7 +58,11 @@ exports.BUILT_IN_PLANS = {
         imageUrl: '',
         planPriceInr: 5000,
         coinCost: 5000,
+        minInvestmentInr: 5000,
+        maxInvestmentInr: 5000,
         durationDays: 30,
+        expectedReturnPercent: 32,
+        dailyRewardPercent: 1.07,
         totalRewardEntitlement: 6600,
         isActive: true,
     },
@@ -63,6 +80,12 @@ exports.PROTECTED_SERVER_FIELDS = [
     'planPriceInr',
     'durationDays',
     'totalRewardEntitlement',
+    'expectedReturnPercent',
+    'dailyRewardPercent',
+    'dailyCoinRewardPreview',
+    'dailyEarningsInr',
+    'minCoins',
+    'maxCoins',
     'collectedReward',
     'remainingReward',
     'daysCompleted',
@@ -120,17 +143,39 @@ function detectTamperedServerFields(rawPayload) {
     }
     return { ok: true };
 }
-function resolveAuthoritativePlanSpec(planId, livePlanData) {
+function evaluateServerComplianceGate(settingsData) {
+    if (!settingsData ||
+        settingsData.legalComplianceVerified !== true ||
+        settingsData.paymentProviderComplianceVerified !== true ||
+        settingsData.realMoneyInvestmentsEnabled !== true) {
+        return {
+            ok: false,
+            message: 'Real-money investments are currently disabled until legal and payment-provider compliance checks are completed and verified.',
+        };
+    }
+    return { ok: true };
+}
+function resolveAuthoritativePlanSpec(planId, livePlanData, requestedAmountInr) {
     const cleanPlanId = sanitizeIdentifier(planId);
     if (!cleanPlanId || cleanPlanId.length > 64) {
         return { ok: false, code: 'not-found', message: 'Selected investment plan was not found.' };
     }
-    let plan;
+    let basePlan;
     if (livePlanData) {
         const rawPrice = Number(livePlanData.planPriceInr);
         const rawCoins = Number(livePlanData.coinDeductionAmount);
         const rawDays = Number(livePlanData.durationDays);
         const rawReward = Number(livePlanData.totalCoinReward);
+        const minInv = typeof livePlanData.minCoins === 'number' &&
+            Number.isInteger(livePlanData.minCoins) &&
+            livePlanData.minCoins >= 1
+            ? livePlanData.minCoins
+            : rawPrice;
+        const maxInv = typeof livePlanData.maxCoins === 'number' &&
+            Number.isInteger(livePlanData.maxCoins) &&
+            livePlanData.maxCoins >= minInv
+            ? livePlanData.maxCoins
+            : Math.max(minInv, rawPrice);
         if (!Number.isFinite(rawPrice) ||
             !Number.isInteger(rawPrice) ||
             rawPrice < 1 ||
@@ -152,31 +197,69 @@ function resolveAuthoritativePlanSpec(planId, livePlanData) {
                 message: 'Published plan configuration contains invalid financial terms.',
             };
         }
-        plan = {
+        const expectedReturnPercent = typeof livePlanData.expectedReturnPercent === 'number' &&
+            Number.isFinite(livePlanData.expectedReturnPercent)
+            ? Math.max(0, Math.round(livePlanData.expectedReturnPercent * 100) / 100)
+            : Math.max(0, Math.round(((rawReward - rawPrice) / rawPrice) * 10000) / 100);
+        const dailyRewardPercent = typeof livePlanData.dailyRewardPercent === 'number' &&
+            Number.isFinite(livePlanData.dailyRewardPercent)
+            ? Math.max(0, Math.round(livePlanData.dailyRewardPercent * 100) / 100)
+            : Math.round((expectedReturnPercent / rawDays) * 100) / 100;
+        basePlan = {
             planId: String(livePlanData.planId || cleanPlanId),
             productName: String(livePlanData.productName || 'Structured Plan').trim().slice(0, 120),
             imageUrl: String(livePlanData.imageUrl || '').slice(0, 500),
             planPriceInr: rawPrice,
             coinCost: rawCoins,
+            minInvestmentInr: minInv,
+            maxInvestmentInr: maxInv,
             durationDays: rawDays,
+            expectedReturnPercent,
+            dailyRewardPercent,
             totalRewardEntitlement: rawReward,
             isActive: Boolean(livePlanData.isActive),
         };
     }
     else if (exports.BUILT_IN_PLANS[cleanPlanId]) {
-        plan = exports.BUILT_IN_PLANS[cleanPlanId];
+        basePlan = exports.BUILT_IN_PLANS[cleanPlanId];
     }
     else {
         return { ok: false, code: 'not-found', message: 'Selected investment plan was not found.' };
     }
-    if (!plan.isActive) {
+    if (!basePlan.isActive) {
         return {
             ok: false,
             code: 'failed-precondition',
             message: 'This investment plan is currently paused by administration.',
         };
     }
-    return { ok: true, plan };
+    let chosenAmountInr = basePlan.planPriceInr;
+    if (requestedAmountInr !== undefined && requestedAmountInr !== null) {
+        const parsed = Number(requestedAmountInr);
+        if (!Number.isFinite(parsed) ||
+            !Number.isInteger(parsed) ||
+            parsed < basePlan.minInvestmentInr ||
+            parsed > basePlan.maxInvestmentInr) {
+            return {
+                ok: false,
+                code: 'invalid-argument',
+                message: `Investment amount must be an integer between ₹${basePlan.minInvestmentInr.toLocaleString('en-IN')} and ₹${basePlan.maxInvestmentInr.toLocaleString('en-IN')}.`,
+            };
+        }
+        chosenAmountInr = parsed;
+    }
+    const authoritativeTotalReward = chosenAmountInr === basePlan.planPriceInr
+        ? basePlan.totalRewardEntitlement
+        : Math.max(0, Math.round(chosenAmountInr * (basePlan.totalRewardEntitlement / basePlan.planPriceInr)));
+    return {
+        ok: true,
+        plan: {
+            ...basePlan,
+            planPriceInr: chosenAmountInr,
+            coinCost: chosenAmountInr,
+            totalRewardEntitlement: authoritativeTotalReward,
+        },
+    };
 }
 function validatePlanAmountsMatch(params) {
     if (params.expectedPlanPriceInr !== undefined && params.expectedPlanPriceInr !== null) {

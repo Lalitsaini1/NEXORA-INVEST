@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { CheckCircle2, Loader2 } from 'lucide-react';
 import { AuthShell } from '../../components/auth/AuthShell';
 import { ROUTES } from '../../config/constants';
@@ -7,7 +7,11 @@ import { mapFirebaseError, sendPasswordReset } from '../../services/authService'
 import { validateEmail } from '../../utils/validators';
 
 export function ResetPasswordPage() {
-  const [email, setEmail] = useState('');
+  const [searchParams] = useSearchParams();
+  const initialEmail = searchParams.get('email')?.trim() || '';
+  const fromAdmin = searchParams.get('from') === 'admin';
+
+  const [email, setEmail] = useState(initialEmail);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sentToEmail, setSentToEmail] = useState<string | null>(null);
@@ -35,8 +39,9 @@ export function ResetPasswordPage() {
 
   return (
     <AuthShell
-      title="Reset your password"
-      subtitle="Enter your registered email address to receive a Firebase password recovery link."
+      isAdmin={fromAdmin}
+      title={fromAdmin ? 'Set or Reset Admin Password' : 'Reset your password'}
+      subtitle="Enter your registered email address to receive a Firebase password setup/recovery link."
     >
       {error && (
         <div
@@ -54,8 +59,8 @@ export function ResetPasswordPage() {
         >
           <CheckCircle2 className="h-4 w-4 text-emerald-700 shrink-0 mt-0.5" aria-hidden="true" />
           <span>
-            Password reset link sent to <strong>{sentToEmail}</strong>. Check your inbox and spam
-            folder to complete recovery.
+            Password setup/reset link sent to <strong>{sentToEmail}</strong>. Check your inbox and
+            spam folder to complete setup.
           </span>
         </div>
       )}
@@ -83,14 +88,17 @@ export function ResetPasswordPage() {
           className="w-full inline-flex items-center justify-center gap-2 py-3 px-4 text-sm font-semibold text-white bg-[#0B1A30] hover:bg-[#13284A] disabled:opacity-60 rounded-lg transition-colors cursor-pointer"
         >
           {submitting && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
-          <span>{submitting ? 'Sending Reset Link...' : 'Send Recovery Link'}</span>
+          <span>{submitting ? 'Sending Reset Link...' : 'Send Setup / Recovery Link'}</span>
         </button>
       </form>
 
       <div className="pt-4 border-t border-slate-200 text-xs text-slate-600 text-center">
         Remember your password?{' '}
-        <Link to={ROUTES.LOGIN} className="font-semibold text-[#0B1A30] hover:text-[#A37B22]">
-          Back to Sign In
+        <Link
+          to={fromAdmin ? ROUTES.ADMIN_LOGIN : ROUTES.LOGIN}
+          className="font-semibold text-[#0B1A30] hover:text-[#A37B22]"
+        >
+          {fromAdmin ? 'Back to Admin Sign In' : 'Back to Sign In'}
         </Link>
       </div>
     </AuthShell>

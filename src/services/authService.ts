@@ -19,8 +19,9 @@ import {
   serverTimestamp,
   updateDoc,
 } from 'firebase/firestore';
-import { SUPER_ADMIN_EMAILS, SUPER_ADMIN_UID } from '../config/constants';
-import { OperationType, auth, db, handleFirestoreError } from '../firebase/client';
+import { httpsCallable } from 'firebase/functions';
+import { OWNER_ADMIN_EMAIL, SUPER_ADMIN_EMAILS, SUPER_ADMIN_UID } from '../config/constants';
+import { OperationType, auth, db, functions, handleFirestoreError } from '../firebase/client';
 import { UserProfile } from '../types/domain';
 import { buildDefaultProfileInputs } from '../utils/profileDefaults';
 import { normalizeIndianMobile } from '../utils/validators';
@@ -703,6 +704,7 @@ export async function loginAdminWithEmail(email: string, password: string): Prom
       userSnap.exists() && (userSnap.data().role === 'ADMIN' || userSnap.data().role === 'SUPER_ADMIN');
 
     if (!isSuperAdmin && !isAdminDoc && !isUserAdminRole && !isAdminClaim) {
+      const normalizedEmail = (user.email || '').trim().toLowerCase();
       await recordAdminLoginAttempt({
         uid: user.uid,
         email: user.email || email.trim(),
@@ -710,10 +712,26 @@ export async function loginAdminWithEmail(email: string, password: string): Prom
         outcome: 'DENIED_NOT_ADMIN',
       });
       await signOut(auth);
+      if (normalizedEmail === OWNER_ADMIN_EMAIL && !user.emailVerified) {
+        throw new AuthServiceError(
+          'ADMIN_EMAIL_UNVERIFIED',
+          `Owner email (${OWNER_ADMIN_EMAIL}) is not verified in Firebase Authentication yet. Verify your email from your inbox link or assign SUPER_ADMIN claims via the Admin SDK setup script, then sign in again.`
+        );
+      }
       throw new AuthServiceError(
         'NOT_ADMIN',
         'Access denied. This account does not hold verified Administrator privileges.'
       );
+    }
+
+    if (isSuperEmail && (!isSuperClaim || !adminSnap.exists() || adminSnap.data()?.role !== 'SUPER_ADMIN')) {
+      try {
+        const syncOwnerFn = httpsCallable(functions, 'syncOwnerSuperAdmin');
+        await syncOwnerFn();
+        await user.getIdTokenResult(true);
+      } catch {
+        // Non-blocking when Cloud Functions are not yet deployed; verified ID token + Firestore rules enforce owner access.
+      }
     }
 
     await recordAdminLoginAttempt({

@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { ArrowRight, CalendarDays, Coins, Info } from 'lucide-react';
 import { ProductPlan } from '../../types/domain';
-import { calculateDailyDistribution, formatCoins, formatInr } from '../../utils/formatters';
+import { formatCoins, formatInr } from '../../utils/formatters';
+import { computePlanEconomics } from '../../utils/planInvestment';
 import { ImageWithFallback } from '../common/ImageWithFallback';
 
 interface ProductPlanCardProps {
@@ -11,11 +12,8 @@ interface ProductPlanCardProps {
 
 export function ProductPlanCard({ plan, onInvestClick }: ProductPlanCardProps) {
   const [showSchedule, setShowSchedule] = useState(false);
-  const distribution = calculateDailyDistribution(plan.totalCoinReward, plan.durationDays);
-  const minDaily = distribution.length ? Math.min(...distribution) : 0;
-  const maxDaily = distribution.length ? Math.max(...distribution) : 0;
-  const dailyRangeLabel =
-    minDaily === maxDaily ? `${minDaily} Coins/day` : `${minDaily}–${maxDaily} Coins/day`;
+  const economics = computePlanEconomics({ plan });
+  const isRangePlan = economics.maxInvestmentInr > economics.minInvestmentInr;
 
   return (
     <article className="flex flex-col bg-white border border-slate-200 rounded-xl overflow-hidden transition-colors hover:border-[#C59B3B]">
@@ -33,7 +31,7 @@ export function ProductPlanCard({ plan, onInvestClick }: ProductPlanCardProps) {
           <div className="flex items-center gap-2 text-xs text-slate-500">
             <span>{plan.category}</span>
             <span aria-hidden="true">·</span>
-            <span className="tabular-nums">{plan.durationDays} Days</span>
+            <span className="tabular-nums">{economics.durationDays} Days</span>
             <span aria-hidden="true">·</span>
             <span className="font-mono">{plan.planId}</span>
           </div>
@@ -43,27 +41,32 @@ export function ProductPlanCard({ plan, onInvestClick }: ProductPlanCardProps) {
 
         <dl className="grid grid-cols-2 gap-x-4 gap-y-3 py-4 border-y border-slate-100 text-sm">
           <div>
-            <dt className="text-xs text-slate-500">Displayed Value</dt>
+            <dt className="text-xs text-slate-500">
+              {isRangePlan ? 'Investment Range (INR)' : 'Investment Amount (INR)'}
+            </dt>
             <dd className="font-mono font-semibold text-[#0B1A30] tabular-nums mt-0.5">
-              {formatInr(plan.displayedValueInr)}
+              {isRangePlan
+                ? `${formatInr(economics.minInvestmentInr)} – ${formatInr(economics.maxInvestmentInr)}`
+                : formatInr(economics.minInvestmentInr)}
             </dd>
           </div>
           <div>
-            <dt className="text-xs text-slate-500">Plan Price</dt>
-            <dd className="font-mono font-semibold text-[#0B1A30] tabular-nums mt-0.5">
-              {formatInr(plan.planPriceInr)} ({plan.coinDeductionAmount} Coins)
+            <dt className="text-xs text-slate-500">Expected Return (Est.)</dt>
+            <dd className="font-mono font-semibold text-[#8A6518] tabular-nums mt-0.5">
+              {economics.expectedReturnPercent}% ({economics.durationDays}d)
             </dd>
           </div>
           <div>
-            <dt className="text-xs text-slate-500">Total Coin Reward</dt>
-            <dd className="font-mono font-semibold text-[#A37B22] tabular-nums mt-0.5">
-              {formatCoins(plan.totalCoinReward)}
+            <dt className="text-xs text-slate-500">Est. Total Payout</dt>
+            <dd className="font-mono font-semibold text-emerald-700 tabular-nums mt-0.5">
+              {formatInr(economics.estimatedTotalPayoutInr)}
+              {isRangePlan ? '+' : ''}
             </dd>
           </div>
           <div>
-            <dt className="text-xs text-slate-500">Daily Distribution</dt>
+            <dt className="text-xs text-slate-500">Est. Daily Earnings</dt>
             <dd className="font-mono font-medium text-slate-800 tabular-nums mt-0.5">
-              {dailyRangeLabel}
+              {formatInr(economics.dailyEarningsInr)} / day
             </dd>
           </div>
         </dl>
@@ -79,30 +82,36 @@ export function ProductPlanCard({ plan, onInvestClick }: ProductPlanCardProps) {
           </button>
           <span className="inline-flex items-center gap-1 text-slate-500">
             <Coins className="h-3.5 w-3.5 text-[#C59B3B]" aria-hidden="true" />
-            <span className="tabular-nums">Sum: {plan.totalCoinReward}</span>
+            <span className="tabular-nums">
+              Base: {formatCoins(economics.estimatedTotalPayoutInr)}
+            </span>
           </span>
         </div>
 
         {showSchedule && (
           <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-2">
             <p className="text-xs font-medium text-[#0B1A30]">
-              Integer Remainder Schedule ({plan.durationDays} Intervals):
+              Indicative Schedule at {formatInr(economics.investmentAmountInr)} (
+              {economics.durationDays} Intervals):
             </p>
             <div className="flex flex-wrap gap-1.5 font-mono text-[11px] tabular-nums text-slate-700">
-              {distribution.slice(0, 14).map((coins, idx) => (
+              {economics.dailyDistribution.slice(0, 14).map((coins, idx) => (
                 <span key={idx} className="px-1.5 py-0.5 bg-white border border-slate-200 rounded">
                   D{idx + 1}:{coins}
                 </span>
               ))}
-              {distribution.length > 14 && (
+              {economics.dailyDistribution.length > 14 && (
                 <span className="px-1.5 py-0.5 text-slate-500">
-                  +{distribution.length - 14} more days
+                  +{economics.dailyDistribution.length - 14} more days
                 </span>
               )}
             </div>
             <p className="text-[11px] text-slate-500 leading-snug flex items-start gap-1.5">
               <Info className="h-3.5 w-3.5 shrink-0 mt-0.5 text-slate-400" aria-hidden="true" />
-              <span>{plan.termsAndConditions}</span>
+              <span>
+                {plan.termsAndConditions} Returns shown are indicative estimates and are not
+                guaranteed.
+              </span>
             </p>
           </div>
         )}

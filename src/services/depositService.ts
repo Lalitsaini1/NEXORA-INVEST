@@ -38,6 +38,10 @@ import {
   buildPaymentTxId,
   buildUtrCreditLockId,
 } from '../utils/paymentIdempotency';
+import {
+  evaluateInvestmentComplianceGate,
+  InvestmentComplianceStatus,
+} from '../utils/planInvestment';
 
 export interface GatewayRuntimeConfig {
   upiDepositsEnabled: boolean;
@@ -46,6 +50,7 @@ export interface GatewayRuntimeConfig {
   coinPackagesCsv: string;
   coinsPerInr: number;
   syncedAt: string;
+  settingsDocExists: boolean;
 }
 
 export const DEFAULT_GATEWAY_RUNTIME_CONFIG: GatewayRuntimeConfig = {
@@ -55,6 +60,7 @@ export const DEFAULT_GATEWAY_RUNTIME_CONFIG: GatewayRuntimeConfig = {
   coinPackagesCsv: DEFAULT_COIN_PACKAGES_CSV,
   coinsPerInr: COIN_CONVERSION_RATE.coinsPerInr,
   syncedAt: '',
+  settingsDocExists: false,
 };
 
 function toIso(raw: unknown): string {
@@ -78,15 +84,15 @@ function createId(prefix: string): string {
 }
 
 export function subscribeGatewayRuntimeConfig(
-  onData: (config: GatewayRuntimeConfig) => void
+  onData: (config: GatewayRuntimeConfig) => void,
+  onError?: (msg: string) => void
 ): Unsubscribe {
   const ref = doc(db, 'platformSettings', 'global');
   return onSnapshot(
     ref,
     (snap) => {
-      const syncedAt = new Date().toISOString();
       if (!snap.exists()) {
-        onData({ ...DEFAULT_GATEWAY_RUNTIME_CONFIG, syncedAt });
+        onData({ ...DEFAULT_GATEWAY_RUNTIME_CONFIG, settingsDocExists: false, syncedAt: '' });
         return;
       }
       const data = snap.data();
@@ -107,11 +113,53 @@ export function subscribeGatewayRuntimeConfig(
             ? data.coinPackagesCsv
             : DEFAULT_COIN_PACKAGES_CSV,
         coinsPerInr: COIN_CONVERSION_RATE.coinsPerInr,
-        syncedAt: toIso(data.updatedAt) || syncedAt,
+        syncedAt: toIso(data.updatedAt) || new Date().toISOString(),
+        settingsDocExists: true,
       });
     },
-    () => {
-      onData({ ...DEFAULT_GATEWAY_RUNTIME_CONFIG, syncedAt: new Date().toISOString() });
+    (err) => {
+      try {
+        handleFirestoreError(err, OperationType.GET, 'platformSettings/global');
+      } catch {
+        onError?.('Unable to load platform UPI gateway settings from Firestore.');
+      }
+      onData({ ...DEFAULT_GATEWAY_RUNTIME_CONFIG, settingsDocExists: false, syncedAt: '' });
+    }
+  );
+}
+
+export function subscribeInvestmentComplianceStatus(
+  onData: (status: InvestmentComplianceStatus) => void,
+  onError?: (msg: string) => void
+): Unsubscribe {
+  const ref = doc(db, 'platformSettings', 'global');
+  return onSnapshot(
+    ref,
+    (snap) => {
+      if (!snap.exists()) {
+        onData(evaluateInvestmentComplianceGate(null));
+        return;
+      }
+      const data = snap.data();
+      onData(
+        evaluateInvestmentComplianceGate({
+          legalComplianceVerified: Boolean(data.legalComplianceVerified),
+          paymentProviderComplianceVerified: Boolean(data.paymentProviderComplianceVerified),
+          realMoneyInvestmentsEnabled: Boolean(data.realMoneyInvestmentsEnabled),
+          complianceStatusNote: data.complianceStatusNote
+            ? String(data.complianceStatusNote)
+            : undefined,
+        })
+      );
+    },
+    (err) => {
+      onError?.('Unable to verify real-money investment compliance status.');
+      try {
+        handleFirestoreError(err, OperationType.GET, 'platformSettings/global');
+      } catch {
+        // Fails closed whenever settings cannot be read
+      }
+      onData(evaluateInvestmentComplianceGate(null));
     }
   );
 }

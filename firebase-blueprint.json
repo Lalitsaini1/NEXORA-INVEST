@@ -489,6 +489,7 @@
         "minCoins": { "type": "integer" },
         "maxCoins": { "type": "integer" },
         "dailyRewardPercent": { "type": "number" },
+        "expectedReturnPercent": { "type": "number" },
         "description": { "type": "string", "maxLength": 500 },
         "termsAndConditions": { "type": "string", "maxLength": 1000 },
         "isActive": { "type": "boolean" },
@@ -804,6 +805,10 @@
         "minDepositInr": { "type": "integer" },
         "maxDepositInr": { "type": "integer" },
         "coinPackagesCsv": { "type": "string", "minLength": 3, "maxLength": 80, "pattern": "^[0-9]{2,6}(,[0-9]{2,6}){0,7}$" },
+        "legalComplianceVerified": { "type": "boolean" },
+        "paymentProviderComplianceVerified": { "type": "boolean" },
+        "realMoneyInvestmentsEnabled": { "type": "boolean" },
+        "complianceStatusNote": { "type": "string", "maxLength": 300 },
         "updatedByUid": { "type": "string", "maxLength": 128 },
         "updatedAt": { "type": "string", "format": "date-time" }
       },

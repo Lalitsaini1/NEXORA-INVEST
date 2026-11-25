@@ -37,6 +37,7 @@ import {
   buildUpiPaymentIntentUrl,
   calculateCoinsForDepositInr,
   coinPackageRecordToOption,
+  evaluateUpiGatewayAvailability,
   getExchangeRateLabel,
   normalizeUtrReference,
   SupportedUpiApp,
@@ -137,6 +138,7 @@ export function UpiPaymentGateway({
 
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
   const [submitting, setSubmitting] = useState(false);
+  const [gatewayReadError, setGatewayReadError] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [noticeMsg, setNoticeMsg] = useState<string | null>(null);
 
@@ -151,10 +153,15 @@ export function UpiPaymentGateway({
   useEffect(() => {
     if (!uid) return;
     setLoadingUpi(true);
-    const unsubConfig = subscribeGatewayRuntimeConfig((cfg) => setRuntimeConfig(cfg));
+    setGatewayReadError(null);
+    const unsubConfig = subscribeGatewayRuntimeConfig(
+      (cfg) => setRuntimeConfig(cfg),
+      (msg) => setGatewayReadError((prev) => prev || msg)
+    );
     const unsubUpi = subscribeActiveUpiAccounts(
       (accounts) => {
         setUpiAccounts(accounts);
+        setGatewayReadError(null);
         setSelectedUpiId((prev) => {
           if (prev && accounts.some((a) => a.accountId === prev)) {
             return prev;
@@ -164,7 +171,7 @@ export function UpiPaymentGateway({
         setLoadingUpi(false);
       },
       (msg) => {
-        setErrorMsg(msg);
+        setGatewayReadError(msg);
         setLoadingUpi(false);
       }
     );
@@ -398,7 +405,16 @@ export function UpiPaymentGateway({
     }
   };
 
-  const gatewayReady = runtimeConfig.upiDepositsEnabled && Boolean(activeAccount);
+  const gatewayStatus = useMemo(
+    () =>
+      evaluateUpiGatewayAvailability({
+        loading: loadingUpi,
+        upiDepositsEnabled: runtimeConfig.upiDepositsEnabled,
+        hasActiveEndpoint: Boolean(activeAccount),
+        readErrorMessage: gatewayReadError,
+      }),
+    [loadingUpi, runtimeConfig.upiDepositsEnabled, activeAccount, gatewayReadError]
+  );
 
   return (
     <section
@@ -437,9 +453,9 @@ export function UpiPaymentGateway({
               {getExchangeRateLabel()}
             </span>
             <span className="block text-[10px] text-slate-600 mt-0.5">
-              {runtimeConfig.syncedAt
+              {runtimeConfig.settingsDocExists && runtimeConfig.syncedAt
                 ? `Live Firestore Sync · ${formatDateTimeInr(runtimeConfig.syncedAt)}`
-                : 'Synced with Firestore Parity Rules'}
+                : 'Default Parity Rules (Admin Config Pending)'}
             </span>
           </div>
           <div className="px-3.5 py-2 rounded-lg bg-slate-50 border border-slate-200 text-xs">
@@ -474,22 +490,16 @@ export function UpiPaymentGateway({
           </div>
         )}
 
-        {loadingUpi ? (
+        {gatewayStatus.reason === 'LOADING' ? (
           <div className="p-5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-500">
-            Loading authorized UPI payment endpoints from Firestore...
+            {gatewayStatus.detail}
           </div>
-        ) : !gatewayReady ? (
+        ) : !gatewayStatus.ready ? (
           <div className="p-5 bg-slate-50 border border-slate-200 rounded-xl flex items-start gap-3 text-xs text-slate-700">
             <Lock className="h-4 w-4 text-[#A37B22] shrink-0 mt-0.5" aria-hidden="true" />
             <div className="space-y-1">
-              <p className="font-bold text-[#0B1A30]">
-                UPI Payment Processing Currently Inactive
-              </p>
-              <p className="text-slate-600">
-                {!runtimeConfig.upiDepositsEnabled
-                  ? 'UPI coin deposits are currently paused by platform administration.'
-                  : 'No active UPI payment endpoint is configured yet. Coin purchases remain paused until an administrator activates a verified UPI endpoint in the Admin Portal.'}
-              </p>
+              <p className="font-bold text-[#0B1A30]">{gatewayStatus.headline}</p>
+              <p className="text-slate-600">{gatewayStatus.detail}</p>
             </div>
           </div>
         ) : (

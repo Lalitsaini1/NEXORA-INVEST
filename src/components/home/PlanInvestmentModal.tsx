@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   AlertTriangle,
@@ -8,17 +8,25 @@ import {
   Coins,
   FileCheck2,
   Loader2,
+  ShieldAlert,
   ShieldCheck,
   Wallet,
   X,
 } from 'lucide-react';
 import { ROUTES } from '../../config/constants';
 import { useAuth } from '../../context/AuthContext';
+import { subscribeInvestmentComplianceStatus } from '../../services/depositService';
 import { investInProductPlan } from '../../services/planService';
 import { CoinWallet, ProductPlan, UserPlan, UserProfile } from '../../types/domain';
-import { calculateDailyDistribution, formatCoins, formatInr } from '../../utils/formatters';
+import { formatCoins, formatInr } from '../../utils/formatters';
 import { formatPlanInvestmentError } from '../../utils/planErrorFormatter';
-import { evaluatePlanInvestmentEligibility } from '../../utils/planInvestment';
+import {
+  computePlanEconomics,
+  evaluateInvestmentComplianceGate,
+  evaluatePlanInvestmentEligibility,
+  InvestmentComplianceStatus,
+  resolvePlanBounds,
+} from '../../utils/planInvestment';
 import { buildAuthUrlWithPlan } from '../../utils/planNavigation';
 
 function createSessionIdempotencyKey(planId: string): string {
@@ -31,6 +39,7 @@ function createSessionIdempotencyKey(planId: string): string {
 
 interface PlanInvestmentModalProps {
   plan: ProductPlan;
+  initialAmountInr?: number;
   profile: UserProfile | null;
   wallet: CoinWallet | null;
   profileInitializing: boolean;
@@ -39,12 +48,28 @@ interface PlanInvestmentModalProps {
 
 export function PlanInvestmentModal({
   plan,
+  initialAmountInr,
   profile,
   wallet,
   profileInitializing,
   onClose,
 }: PlanInvestmentModalProps) {
   const { firebaseUser } = useAuth();
+  const bounds = useMemo(() => resolvePlanBounds(plan), [plan]);
+  const isRangePlan = bounds.maxInvestmentInr > bounds.minInvestmentInr;
+
+  const [amountInput, setAmountInput] = useState<string>(() => {
+    const start =
+      typeof initialAmountInr === 'number' && Number.isFinite(initialAmountInr)
+        ? Math.min(bounds.maxInvestmentInr, Math.max(bounds.minInvestmentInr, Math.round(initialAmountInr)))
+        : bounds.minInvestmentInr;
+    return String(start);
+  });
+  const [compliance, setCompliance] = useState<InvestmentComplianceStatus>(() =>
+    evaluateInvestmentComplianceGate(null)
+  );
+  const [complianceLoaded, setComplianceLoaded] = useState(false);
+
   const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -57,6 +82,11 @@ export function PlanInvestmentModal({
   );
 
   useEffect(() => {
+    const start =
+      typeof initialAmountInr === 'number' && Number.isFinite(initialAmountInr)
+        ? Math.min(bounds.maxInvestmentInr, Math.max(bounds.minInvestmentInr, Math.round(initialAmountInr)))
+        : bounds.minInvestmentInr;
+    setAmountInput(String(start));
     setAcceptedTerms(false);
     setSubmitting(false);
     setError(null);
@@ -65,7 +95,27 @@ export function PlanInvestmentModal({
     setSavedRequestId(null);
     setVerifiedInFirestore(false);
     setIdempotencyKey(createSessionIdempotencyKey(plan.planId));
-  }, [plan.planId]);
+  }, [plan.planId, initialAmountInr, bounds.minInvestmentInr, bounds.maxInvestmentInr]);
+
+  useEffect(() => {
+    const unsub = subscribeInvestmentComplianceStatus((status) => {
+      setCompliance(status);
+      setComplianceLoaded(true);
+    });
+    return () => unsub();
+  }, []);
+
+  const rawParsedAmount = Number(amountInput);
+  const hasValidWholeAmount =
+    Number.isFinite(rawParsedAmount) &&
+    Number.isInteger(rawParsedAmount) &&
+    rawParsedAmount >= bounds.minInvestmentInr &&
+    rawParsedAmount <= bounds.maxInvestmentInr;
+
+  const economics = computePlanEconomics({
+    plan,
+    investmentAmountInr: hasValidWholeAmount ? rawParsedAmount : bounds.minInvestmentInr,
+  });
 
   const availableCoins = wallet?.availableCoins ?? 0;
   const eligibility = evaluatePlanInvestmentEligibility({
@@ -73,11 +123,12 @@ export function PlanInvestmentModal({
     availableCoins,
     accountStatus: profile?.status,
     acceptedTerms,
+    investmentAmountInr: hasValidWholeAmount ? rawParsedAmount : rawParsedAmount,
+    complianceApproved: complianceLoaded ? compliance.allowed : false,
   });
 
-  const distribution = calculateDailyDistribution(plan.totalCoinReward, plan.durationDays);
-  const minDaily = distribution.length ? Math.min(...distribution) : 0;
-  const maxDaily = distribution.length ? Math.max(...distribution) : 0;
+  const minDaily = economics.dailyPayoutMinCoins;
+  const maxDaily = economics.dailyPayoutMaxCoins;
   const dailyRangeLabel =
     minDaily === maxDaily ? `${minDaily} Coins/day` : `${minDaily}–${maxDaily} Coins/day`;
 
@@ -95,6 +146,11 @@ export function PlanInvestmentModal({
       return;
     }
 
+    if (!compliance.allowed) {
+      setError(compliance.reason);
+      return;
+    }
+
     if (!eligibility.eligible) {
       setError(eligibility.reason || 'Cannot confirm investment.');
       return;
@@ -107,6 +163,8 @@ export function PlanInvestmentModal({
         userId: profile.userId,
         plan,
         acceptedTerms,
+        investmentAmountInr: economics.investmentAmountInr,
+        complianceApproved: compliance.allowed,
         idempotencyKey,
       });
       setConfirmedPlan(result.userPlan);
@@ -157,53 +215,114 @@ export function PlanInvestmentModal({
           </button>
         </div>
 
-        {/* Core Preserved Plan Specifications */}
-        <dl className="grid grid-cols-2 gap-3 p-4 bg-slate-50 border border-slate-200 rounded-lg text-sm">
-          <div>
-            <dt className="text-[11px] font-medium text-slate-500">Plan Name</dt>
-            <dd className="font-semibold text-[#0B1A30] mt-0.5">{plan.productName}</dd>
+        {/* Variable Investment Amount Selector (when plan supports a range) */}
+        {!confirmedPlan && isRangePlan && (
+          <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg space-y-2">
+            <div className="flex items-center justify-between text-xs">
+              <label htmlFor="modal-invest-amount" className="font-semibold text-[#0B1A30]">
+                Choose Investment Amount (INR)
+              </label>
+              <span className="font-mono text-slate-500 tabular-nums">
+                Range: {formatInr(bounds.minInvestmentInr)} – {formatInr(bounds.maxInvestmentInr)}
+              </span>
+            </div>
+            <input
+              id="modal-invest-amount"
+              type="number"
+              min={bounds.minInvestmentInr}
+              max={bounds.maxInvestmentInr}
+              step={1}
+              value={amountInput}
+              onChange={(e) => {
+                setAmountInput(e.target.value);
+                setError(null);
+              }}
+              className={`w-full px-3 py-2 text-sm font-mono font-semibold bg-white border rounded-lg tabular-nums ${
+                hasValidWholeAmount ? 'border-slate-300' : 'border-red-400'
+              }`}
+            />
+            {!hasValidWholeAmount && (
+              <p className="text-[11px] text-red-700">
+                Enter a whole INR amount between {formatInr(bounds.minInvestmentInr)} and{' '}
+                {formatInr(bounds.maxInvestmentInr)}.
+              </p>
+            )}
           </div>
+        )}
+
+        {/* Authoritative Calculated Plan Specifications */}
+        <dl className="grid grid-cols-2 gap-3 p-4 bg-slate-50 border border-slate-200 rounded-lg text-sm">
           <div>
             <dt className="text-[11px] font-medium text-slate-500">Investment Amount</dt>
             <dd className="font-mono font-semibold text-[#0B1A30] tabular-nums mt-0.5">
-              {formatInr(plan.planPriceInr)}
+              {formatInr(economics.investmentAmountInr)}
             </dd>
           </div>
           <div>
-            <dt className="text-[11px] font-medium text-slate-500">Coin Allocation</dt>
-            <dd className="font-mono font-semibold text-[#0B1A30] tabular-nums mt-0.5">
-              {formatCoins(plan.coinDeductionAmount)}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-[11px] font-medium text-slate-500">Investment Duration</dt>
+            <dt className="text-[11px] font-medium text-slate-500">Duration</dt>
             <dd className="font-mono font-semibold text-[#0B1A30] tabular-nums mt-0.5 flex items-center gap-1">
               <CalendarDays className="h-3.5 w-3.5 text-[#A37B22]" aria-hidden="true" />
-              <span>{plan.durationDays} Days</span>
+              <span>{economics.durationDays} Days</span>
             </dd>
           </div>
           <div>
-            <dt className="text-[11px] font-medium text-slate-500">Total Reward Entitlement</dt>
-            <dd className="font-mono font-bold text-[#A37B22] tabular-nums mt-0.5">
-              {formatCoins(plan.totalCoinReward)}
+            <dt className="text-[11px] font-medium text-slate-500">Expected Return (Est.)</dt>
+            <dd className="font-mono font-bold text-[#8A6518] tabular-nums mt-0.5">
+              {economics.expectedReturnPercent}% (Non-Guaranteed)
             </dd>
           </div>
           <div>
-            <dt className="text-[11px] font-medium text-slate-500">Daily Distribution</dt>
+            <dt className="text-[11px] font-medium text-slate-500">Estimated Total Payout</dt>
+            <dd className="font-mono font-bold text-emerald-700 tabular-nums mt-0.5">
+              {formatInr(economics.estimatedTotalPayoutInr)}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-[11px] font-medium text-slate-500">Estimated Daily Earnings</dt>
+            <dd className="font-mono font-medium text-slate-800 tabular-nums mt-0.5">
+              {formatInr(economics.dailyEarningsInr)} / day
+            </dd>
+          </div>
+          <div>
+            <dt className="text-[11px] font-medium text-slate-500">Ledger Coin Payout</dt>
             <dd className="font-mono font-medium text-slate-800 tabular-nums mt-0.5">
               {dailyRangeLabel}
             </dd>
           </div>
         </dl>
 
-        {/* Plan Terms & Conditions */}
+        {/* Risk, Fees & Withdrawal Conditions Disclosure */}
         <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg space-y-1.5">
           <p className="text-xs font-semibold text-[#0B1A30] flex items-center gap-1.5">
             <FileCheck2 className="h-3.5 w-3.5 text-[#A37B22]" aria-hidden="true" />
-            <span>Plan Terms and Conditions</span>
+            <span>Risks, Fees &amp; Withdrawal Conditions</span>
           </p>
           <p className="text-xs text-slate-600 leading-relaxed">{plan.termsAndConditions}</p>
+          <p className="text-[11px] text-slate-500 leading-relaxed">
+            <strong>Disclosures:</strong> Indicative returns are estimates and are not guaranteed.
+            Plan enrollment fee is ₹0; payment-gateway or statutory TDS/bank charges (if applicable)
+            apply strictly upon withdrawal settlement to verified payout accounts.
+          </p>
         </div>
+
+        {/* Compliance Gate Hold Warning */}
+        {!confirmedPlan && complianceLoaded && !compliance.allowed && (
+          <div
+            role="status"
+            className="p-3.5 bg-amber-50 border border-amber-300 rounded-lg flex items-start gap-2.5 text-xs text-amber-950"
+          >
+            <ShieldAlert className="h-4 w-4 text-amber-700 shrink-0 mt-0.5" aria-hidden="true" />
+            <div className="space-y-1">
+              <p className="font-bold">Real-Money Investments Pending Compliance Verification</p>
+              <p className="leading-relaxed">{compliance.reason}</p>
+              {compliance.complianceStatusNote && (
+                <p className="font-mono text-[11px] text-amber-900">
+                  Reference: {compliance.complianceStatusNote}
+                </p>
+              )}
+            </div>
+          </div>
+        )}
 
         {confirmedPlan ? (
           <div className="space-y-4">
@@ -216,7 +335,7 @@ export function PlanInvestmentModal({
                   </p>
                   <p className="text-xs text-emerald-800">
                     {formatCoins(confirmedPlan.coinCost)} verified and deducted via backend ledger
-                    transaction. Your {confirmedPlan.durationDays}-day reward cycle is now active.
+                    transaction. Your {confirmedPlan.durationDays}-day cycle is now active.
                   </p>
                 </div>
               </div>
@@ -312,10 +431,11 @@ export function PlanInvestmentModal({
                     <p className="leading-relaxed">
                       You currently hold {formatCoins(availableCoins)}, which is{' '}
                       <strong>
-                        {formatCoins(eligibility.shortfallCoins)} ({formatInr(eligibility.shortfallCoins)})
+                        {formatCoins(eligibility.shortfallCoins)} (
+                        {formatInr(eligibility.shortfallCoins)})
                       </strong>{' '}
-                      short of the required {formatCoins(plan.coinDeductionAmount)}. Complete a
-                      verified UPI coin deposit in your dashboard to activate this plan.
+                      short of the selected {formatCoins(economics.coinCost)}. Complete a verified
+                      UPI coin deposit in your dashboard to activate this plan.
                     </p>
                   </div>
                 </div>
@@ -348,15 +468,16 @@ export function PlanInvestmentModal({
                       setAcceptedTerms(e.target.checked);
                       if (e.target.checked) setError(null);
                     }}
-                    disabled={submitting}
+                    disabled={submitting || !compliance.allowed}
                     className="mt-0.5 h-4 w-4 rounded border-slate-300 text-[#0B1A30] focus:ring-[#C59B3B]"
                   />
                   <span>
-                    I confirm deduction of{' '}
+                    I confirm allocation of{' '}
                     <strong className="font-mono">
-                      {formatCoins(plan.coinDeductionAmount)} ({formatInr(plan.planPriceInr)})
-                    </strong>{' '}
-                    and accept the Plan Terms and Conditions &amp; Risk Disclosures.
+                      {formatInr(economics.investmentAmountInr)} ({formatCoins(economics.coinCost)})
+                    </strong>
+                    , understand returns are indicative (not guaranteed), and accept all Plan Terms,
+                    Fees &amp; Withdrawal Conditions.
                   </span>
                 </label>
 
@@ -386,18 +507,24 @@ export function PlanInvestmentModal({
                   <button
                     type="button"
                     onClick={() => void handleConfirmInvestment()}
-                    disabled={submitting || !acceptedTerms}
+                    disabled={
+                      submitting ||
+                      !acceptedTerms ||
+                      !hasValidWholeAmount ||
+                      !complianceLoaded ||
+                      !compliance.allowed
+                    }
                     className="inline-flex items-center justify-center gap-2 py-2.5 px-4 text-sm font-semibold text-white bg-[#0B1A30] hover:bg-[#13284A] disabled:opacity-60 rounded-lg cursor-pointer"
                   >
                     {submitting ? (
                       <>
                         <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                        <span>Activating...</span>
+                        <span>Validating...</span>
                       </>
                     ) : (
                       <>
                         <ShieldCheck className="h-4 w-4 text-[#D8B45A]" aria-hidden="true" />
-                        <span>Confirm &amp; Invest</span>
+                        <span>Invest Now</span>
                       </>
                     )}
                   </button>
